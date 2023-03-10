@@ -14,7 +14,7 @@ import (
 func main() {
 	providerAddress := os.Getenv("PROVIDER_LOCAL_PATH")
 	if providerAddress == "" {
-		providerAddress = "registry.terraform.io/styumyum/st-aws"
+		providerAddress = "registry.terraform.io/myklst/st-aws"
 	}
 	providerserver.Serve(context.Background(), aws.New, providerserver.ServeOpts{
 		Address: providerAddress,
