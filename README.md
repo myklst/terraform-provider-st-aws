@@ -63,5 +63,5 @@ References
 ----------
 
 - Terraform website: https://www.terraform.io
-- AWS official Terraform provider: https://github.com/hashicorp/terraform-provider-aws
 - Terraform Plugin Framework: https://developer.hashicorp.com/terraform/tutorials/providers-plugin-framework
+- AWS official Terraform provider: https://github.com/hashicorp/terraform-provider-aws
