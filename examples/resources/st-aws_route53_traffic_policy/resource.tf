@@ -1,0 +1,53 @@
+resource "st-aws_route53_traffic_policy" "traffic_policy" {
+  name     = "traffic-policy"
+  comment  = "Traffic policy"
+  document = <<-EOF
+	{
+		"AWSPolicyFormatVersion":"2015-10-01",
+		"RecordType":"A",
+		"StartRule":"geo_dest",
+		"Endpoints":{
+		  "endpoint-one":{
+			"Type":"value",
+			"Value":"192.0.2.1"
+		  },
+		  "endpoint-two":{
+			"Type":"value",
+			"Value":"192.0.2.2"
+		  },
+		},
+		"Rules":{
+		  "geo_dest":{
+			"RuleType":"geo",
+			"Locations":[
+			  {
+				"EndpointReference":"endpoint-one",
+				"IsDefault":true
+			  },
+			  {
+				"EndpointReference":"endpoint-two",
+				"Country":"FR"
+			  },
+			  {
+				"RuleReference":"round_robin",
+				"Country":"DE"
+			  }
+			]
+		  },
+		  "round_robin":{
+			"RuleType":"weighted",
+			"Items":[
+			  {
+				"EndpointReference":"endpoint-one",
+				"Weight":"3"
+			  },
+			  {
+				"EndpointReference":"endpoint-two",
+				"Weight":"1"
+			  }
+			]
+		  }
+		}
+	  }
+    EOF
+}
