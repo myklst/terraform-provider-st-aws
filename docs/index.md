@@ -3,12 +3,12 @@
 page_title: "st-aws Provider"
 subcategory: ""
 description: |-
-  AWS Services provider.
+  The AWS provider is used to interact with the many resources supported by AWS. The provider needs to be configured with the proper credentials before it can be used.
 ---
 
 # st-aws Provider
 
-AWS Services provider.
+The AWS provider is used to interact with the many resources supported by AWS. The provider needs to be configured with the proper credentials before it can be used.
 
 ## Example Usage
 
@@ -31,5 +31,3 @@ provider "st-aws" {}
 
 - `access_key` (String) URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable
 - `secret_key` (String, Sensitive) API key for AWS Services API. May also be provided via AWS_SECRET_ACCESS_KEY environment variable
-
-

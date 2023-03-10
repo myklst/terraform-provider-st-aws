@@ -48,7 +48,8 @@ func (p *awsServicesProvider) Metadata(_ context.Context, _ provider.MetadataReq
 // Schema defines the provider-level schema for configuration data.
 func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "AWS Services provider.",
+		Description: "The AWS provider is used to interact with the many resources supported by AWS. " +
+		"The provider needs to be configured with the proper credentials before it can be used.",
 		Attributes: map[string]schema.Attribute{
 			"access_key": schema.StringAttribute{
 				Description: "URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable",
