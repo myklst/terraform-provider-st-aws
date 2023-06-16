@@ -36,6 +36,7 @@ func New() provider.Provider {
 type awsServicesProvider struct{}
 
 type awsServicesProviderModel struct {
+	Region    types.String `tfsdk:"region"`
 	AccessKey types.String `tfsdk:"access_key"`
 	SecretKey types.String `tfsdk:"secret_key"`
 }
@@ -49,16 +50,23 @@ func (p *awsServicesProvider) Metadata(_ context.Context, _ provider.MetadataReq
 func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "The AWS provider is used to interact with the many resources supported by AWS. " +
-		"The provider needs to be configured with the proper credentials before it can be used.",
+			"The provider needs to be configured with the proper credentials before it can be used.",
 		Attributes: map[string]schema.Attribute{
+			"region": schema.StringAttribute{
+				Description: "Region for AWS Services API. May also be provided " +
+					"via AWS_REGION environment variable. Default to use ap-southeast-1.",
+				Optional: true,
+			},
 			"access_key": schema.StringAttribute{
-				Description: "URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable",
-				Optional:    true,
+				Description: "URI for AWS Services API. May also be provided via " +
+					"AWS_ACCESS_KEY_ID environment variable",
+				Optional: true,
 			},
 			"secret_key": schema.StringAttribute{
-				Description: "API key for AWS Services API. May also be provided via AWS_SECRET_ACCESS_KEY environment variable",
-				Optional:    true,
-				Sensitive:   true,
+				Description: "API key for AWS Services API. May also be provided " +
+					"via AWS_SECRET_ACCESS_KEY environment variable",
+				Optional:  true,
+				Sensitive: true,
 			},
 		},
 	}
@@ -104,7 +112,17 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 
 	// Default values to environment variables, but override
 	// with Terraform configuration value if set.
-	var accessKey, secretKey string
+	var region, accessKey, secretKey string
+	if !config.Region.IsNull() {
+		region = config.Region.ValueString()
+	} else {
+		if regionEnv, exist := os.LookupEnv("AWS_REGION"); exist {
+			region = regionEnv
+		} else {
+			region = "ap-southeast-1"
+		}
+	}
+
 	if !config.AccessKey.IsNull() {
 		accessKey = config.AccessKey.ValueString()
 	} else {
@@ -120,13 +138,24 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	// If any of the expected configuration are missing, return
 	// errors with provider-specific guidance.
 
+	if region == "" {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("region"),
+			"Missing AWS Services API Region",
+			"The provider cannot create the AWS Services API client as there is a "+
+				"missing or empty value for the AWS Services API region. Set the "+
+				"region value in the configuration or use the AWS_REGION environment "+
+				"variable. If either is already set, ensure the value is not empty.",
+		)
+	}
+
 	if accessKey == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("access_key"),
-			"Missing AWS Services API access key",
+			"Missing AWS Services API Access Key",
 			"The provider cannot create the AWS Services API client as there is a "+
-				"missing or empty value for the AWS Services API Access Key. Set the "+
-				"Access Key value in the configuration or use the AWS_ACCESS_KEY_ID "+
+				"missing or empty value for the AWS Services API access key. Set the "+
+				"access key value in the configuration or use the AWS_ACCESS_KEY_ID "+
 				"environment variable. If either is already set, ensure the value "+
 				"is not empty.",
 		)
@@ -135,10 +164,10 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	if secretKey == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("secret_key"),
-			"Missing AWS Services secret key",
+			"Missing AWS Services Secret Key",
 			"The provider cannot create the AWS Services API client as there is "+
-				"a missing or empty value for the AWS Services API Secret Key. Set "+
-				"the API Secret key value in the configuration or use the AWS_SECRET_ACCESS_KEY "+
+				"a missing or empty value for the AWS Services API secret key. Set "+
+				"the API secret key value in the configuration or use the AWS_SECRET_ACCESS_KEY "+
 				"environment variable. If either is already set, ensure the value "+
 				"is not empty.",
 		)
@@ -151,7 +180,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	awsCfg, err := awsConfig.LoadDefaultConfig(
 		ctx,
 		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-		awsConfig.WithRegion("ap-southeast-1"),
+		awsConfig.WithRegion(region),
 	)
 	if err != nil {
 		resp.Diagnostics.AddError(
