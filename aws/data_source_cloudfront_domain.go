@@ -110,22 +110,13 @@ func (d *cdnDomainDataSource) Read(ctx context.Context, req datasource.ReadReque
 		plan.ClientConfig = &clientConfig{}
 	}
 
-	var region, accessKey, secretKey string
 	initClient := false
-	if !(plan.ClientConfig.Region.IsUnknown() && plan.ClientConfig.Region.IsNull()) {
-		if region = plan.ClientConfig.Region.ValueString(); region != "" {
-			initClient = true
-		}
-	}
-	if !(plan.ClientConfig.AccessKey.IsUnknown() && plan.ClientConfig.AccessKey.IsNull()) {
-		if accessKey = plan.ClientConfig.AccessKey.ValueString(); accessKey != "" {
-			initClient = true
-		}
-	}
-	if !(plan.ClientConfig.SecretKey.IsUnknown() && plan.ClientConfig.SecretKey.IsNull()) {
-		if secretKey = plan.ClientConfig.SecretKey.ValueString(); secretKey != "" {
-			initClient = true
-		}
+	region := plan.ClientConfig.Region.ValueString()
+	accessKey := plan.ClientConfig.AccessKey.ValueString()
+	secretKey := plan.ClientConfig.SecretKey.ValueString()
+
+	if region != "" || accessKey != "" || secretKey != "" {
+		initClient = true
 	}
 
 	if initClient {
