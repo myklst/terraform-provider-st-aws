@@ -14,6 +14,7 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awsCloudfrontClient "github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awsIamClient "github.com/aws/aws-sdk-go-v2/service/iam"
 	awsRoute53Client "github.com/aws/aws-sdk-go-v2/service/route53"
 )
 
@@ -21,6 +22,7 @@ import (
 type awsClients struct {
 	cloudfrontClient *awsCloudfrontClient.Client
 	route53Client    *awsRoute53Client.Client
+	iamClient        *awsIamClient.Client
 }
 
 // Ensure the implementation satisfies the expected interfaces
@@ -49,7 +51,7 @@ func (p *awsServicesProvider) Metadata(_ context.Context, _ provider.MetadataReq
 func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "The AWS provider is used to interact with the many resources supported by AWS. " +
-		"The provider needs to be configured with the proper credentials before it can be used.",
+			"The provider needs to be configured with the proper credentials before it can be used.",
 		Attributes: map[string]schema.Attribute{
 			"access_key": schema.StringAttribute{
 				Description: "URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable",
@@ -166,10 +168,12 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	// Initialize Clients
 	cloudfrontClient := awsCloudfrontClient.NewFromConfig(awsCfg)
 	route53Client := awsRoute53Client.NewFromConfig(awsCfg)
+	iamClient := awsIamClient.NewFromConfig(awsCfg)
 
 	clients := awsClients{
 		cloudfrontClient: cloudfrontClient,
 		route53Client:    route53Client,
+		iamClient:        iamClient,
 	}
 
 	resp.DataSourceData = clients
@@ -186,5 +190,6 @@ func (p *awsServicesProvider) DataSources(_ context.Context) []func() datasource
 func (p *awsServicesProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewRoute53Resource,
+		NewIamPolicyResource,
 	}
 }
