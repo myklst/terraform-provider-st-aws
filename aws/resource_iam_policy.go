@@ -95,6 +95,7 @@ func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureR
 }
 
 func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+
 	var plan *iamPolicyResourceModel
 	getPlanDiags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(getPlanDiags...)
@@ -551,7 +552,8 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string) {
 	listPolicies := func() error {
 		listPoliciesResponse, err := r.client.ListPolicies(ctx, &awsIamClient.ListPoliciesInput{
-			Scope: "All",
+			MaxItems: aws.Int32(1000),
+			Scope:    "All",
 		})
 		if err != nil {
 			return handleAPIError(err)
