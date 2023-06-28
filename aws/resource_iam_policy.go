@@ -37,7 +37,7 @@ type iamPolicyResource struct {
 
 type iamPolicyResourceModel struct {
 	PolicyName     types.String `tfsdk:"policy_name"`
-	PolicyDocument types.String `tfsdk:"policy_document"`
+	PolicyDocument types.List   `tfsdk:"policy_document"`
 	Policies       types.List   `tfsdk:"policies"`
 	UserName       types.String `tfsdk:"user_name"`
 }
@@ -59,9 +59,10 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Description: "The policy name.",
 				Required:    true,
 			},
-			"policy_document": schema.StringAttribute{
+			"policy_document": schema.ListAttribute{
 				Description: "The policy document of the RAM policy.",
 				Required:    true,
+				ElementType: types.StringType,
 			},
 			"policies": schema.ListNestedAttribute{
 				Description: "A list of policies.",
@@ -95,7 +96,6 @@ func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureR
 }
 
 func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-
 	var plan *iamPolicyResourceModel
 	getPlanDiags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(getPlanDiags...)
@@ -437,28 +437,10 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 	appendedPolicyDocument := make([]string, 0)
 	finalPolicyDocument := make([]string, 0)
 
-	tempDocument := plan.PolicyDocument.ValueString()
-	tempDocument = strings.TrimSpace(tempDocument)
-	tempDocument = strings.TrimPrefix(tempDocument, "[")
-
-	lastChar := tempDocument[len(tempDocument)-2]
-
-	if lastChar == ',' {
-		tempDocument = strings.TrimSuffix(tempDocument, ",]")
-	} else {
-		tempDocument = strings.TrimSuffix(tempDocument, "]")
-	}
-
-	policyList := strings.Split(tempDocument, ",")
-
-	for i, policy := range policyList {
-		policyList[i] = strings.TrimSpace(policy)
-		policyList[i] = strings.Trim(policyList[i], "\"")
-	}
-
 	getPolicy := func() error {
-		for i, policy := range policyList {
-			policyArn := r.getPolicyArn(ctx, policy)
+		for i, policy := range plan.PolicyDocument.Elements() {
+			policyName := strings.TrimPrefix(strings.TrimSuffix(policy.String(), "\""), "\"")
+			policyArn := r.getPolicyArn(ctx, policyName)
 
 			var err error
 			getPolicyResponse, err := r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
@@ -498,7 +480,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 				currentPolicyDocument += finalStatement + ","
 			}
 
-			if i == len(policyList)-1 && (currentLength+30) <= maxLength {
+			if i == len(plan.PolicyDocument.Elements())-1 && (currentLength+30) <= maxLength {
 				lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
 				if lastCommaIndex >= 0 {
 					currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]

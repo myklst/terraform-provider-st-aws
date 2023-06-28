@@ -1,5 +1,5 @@
 resource "st-aws_iam_policy" "iam_policy" {
   policy_name     = "test-policy"
-  policy_document = "[\"CloudSearchFullAccess\",\"PowerUserAccess\",\"ReadOnlyAccess\",\"AdministratorAccess\"]"
+  policy_document = ["PowerUserAccess","AWSSupportAccess","AWSLambdaRole","AmazonSNSRole"]
   user_name       = "devopsuser01"
 }
