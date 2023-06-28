@@ -37,7 +37,7 @@ type iamPolicyResource struct {
 
 type iamPolicyResourceModel struct {
 	PolicyName     types.String `tfsdk:"policy_name"`
-	PolicyDocument types.List   `tfsdk:"policy_document"`
+	AttachedPolicy types.List   `tfsdk:"attached_policy"`
 	Policies       types.List   `tfsdk:"policies"`
 	UserName       types.String `tfsdk:"user_name"`
 }
@@ -59,7 +59,7 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Description: "The policy name.",
 				Required:    true,
 			},
-			"policy_document": schema.ListAttribute{
+			"attached_policy": schema.ListAttribute{
 				Description: "The policy document of the RAM policy.",
 				Required:    true,
 				ElementType: types.StringType,
@@ -114,7 +114,7 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 
 	state := &iamPolicyResourceModel{}
 	state.PolicyName = plan.PolicyName
-	state.PolicyDocument = plan.PolicyDocument
+	state.AttachedPolicy = plan.AttachedPolicy
 	state.Policies = types.ListValueMust(
 		types.ObjectType{
 			AttrTypes: map[string]attr.Type{
@@ -221,7 +221,7 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	state.PolicyName = plan.PolicyName
-	state.PolicyDocument = plan.PolicyDocument
+	state.AttachedPolicy = plan.AttachedPolicy
 	state.Policies = types.ListValueMust(
 		types.ObjectType{
 			AttrTypes: map[string]attr.Type{
@@ -270,7 +270,10 @@ func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteReque
 }
 
 func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyResourceModel) (policiesList []attr.Value, err error) {
-	formattedPolicy := r.getPolicyDocument(ctx, plan)
+	formattedPolicy, err := r.getPolicyDocument(ctx, plan)
+	if err != nil {
+		return nil, err
+	}
 
 	createPolicy := func() error {
 		for i, policy := range formattedPolicy {
@@ -431,77 +434,85 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	return nil
 }
 
-func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPolicyResourceModel) []string {
+func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPolicyResourceModel) (finalPolicyDocument []string, err error) {
 	currentLength := 0
 	currentPolicyDocument := ""
 	appendedPolicyDocument := make([]string, 0)
-	finalPolicyDocument := make([]string, 0)
+	finalPolicyDocument = make([]string, 0)
 
-	getPolicy := func() error {
-		for i, policy := range plan.PolicyDocument.Elements() {
-			policyName := strings.TrimPrefix(strings.TrimSuffix(policy.String(), "\""), "\"")
-			policyArn := r.getPolicyArn(ctx, policyName)
+	var getPolicyResponse *awsIamClient.GetPolicyVersionOutput
 
+	for i, policy := range plan.AttachedPolicy.Elements() {
+		policyName := strings.TrimPrefix(strings.TrimSuffix(policy.String(), "\""), "\"")
+		policyArn := r.getPolicyArn(ctx, policyName)
+
+		getPolicy := func() error {
 			var err error
-			getPolicyResponse, err := r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
+			getPolicyResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
 				VersionId: aws.String("v1"),
 			})
 			if err != nil {
 				handleAPIError(err)
 			}
-
-			tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.PolicyVersion.Document)
-
-			var data map[string]interface{}
-			err = json.Unmarshal([]byte(tempPolicyDocument), &data)
-
-			statementArr := data["Statement"].([]interface{})
-			statementBytes, _ := json.MarshalIndent(statementArr, "", "  ")
-
-			removeSpaces := strings.ReplaceAll(string(statementBytes), " ", "")
-			replacer := strings.NewReplacer("\n", "")
-			removeParagraphs := replacer.Replace(removeSpaces)
-
-			finalStatement := strings.Trim(removeParagraphs, "[]")
-
-			currentLength += len(finalStatement)
-
-			if (currentLength + 30) > maxLength {
-				lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
-				if lastCommaIndex >= 0 {
-					currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
-				}
-
-				appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
-				currentPolicyDocument = finalStatement + ","
-				currentLength = len(finalStatement)
-			} else {
-				currentPolicyDocument += finalStatement + ","
-			}
-
-			if i == len(plan.PolicyDocument.Elements())-1 && (currentLength+30) <= maxLength {
-				lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
-				if lastCommaIndex >= 0 {
-					currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
-				}
-
-				appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
-			}
+			return nil
 		}
 
-		return nil
-	}
+		reconnectBackoff := backoff.NewExponentialBackOff()
+		reconnectBackoff.MaxElapsedTime = 30 * time.Second
+		backoff.Retry(getPolicy, reconnectBackoff)
 
-	reconnectBackoff := backoff.NewExponentialBackOff()
-	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	backoff.Retry(getPolicy, reconnectBackoff)
+		tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.PolicyVersion.Document)
+
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
+			return nil, err
+		}
+
+		statementArr := data["Statement"].([]interface{})
+		statementBytes, err := json.MarshalIndent(statementArr, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+
+		removeSpaces := strings.ReplaceAll(string(statementBytes), " ", "")
+		replacer := strings.NewReplacer("\n", "")
+		removeParagraphs := replacer.Replace(removeSpaces)
+
+		finalStatement := strings.Trim(removeParagraphs, "[]")
+
+		currentLength += len(finalStatement)
+
+		// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
+		// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
+		if (currentLength + 30) > maxLength {
+			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
+			if lastCommaIndex >= 0 {
+				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
+			}
+
+			appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
+			currentPolicyDocument = finalStatement + ","
+			currentLength = len(finalStatement)
+		} else {
+			currentPolicyDocument += finalStatement + ","
+		}
+
+		if i == len(plan.AttachedPolicy.Elements())-1 && (currentLength+30) <= maxLength {
+			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
+			if lastCommaIndex >= 0 {
+				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
+			}
+
+			appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
+		}
+	}
 
 	for _, policy := range appendedPolicyDocument {
 		finalPolicyDocument = append(finalPolicyDocument, fmt.Sprintf(`{"Version":"2012-10-17","Statement":[%v]}`, policy))
 	}
 
-	return finalPolicyDocument
+	return finalPolicyDocument, nil
 }
 
 func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPolicyResourceModel) (err error) {
