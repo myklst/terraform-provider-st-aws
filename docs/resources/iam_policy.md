@@ -17,7 +17,7 @@ Provides a RAM Policy resource.
 
 ### Required
 
-- `policy_document` (String) The policy document of the RAM policy.
+- `policy_document` (List of String) The policy document of the RAM policy.
 - `policy_name` (String) The policy name.
 - `user_name` (String) The name of the RAM user that attached to the policy.
 
