@@ -3,12 +3,12 @@
 page_title: "st-aws_iam_policy Resource - st-aws"
 subcategory: ""
 description: |-
-  Provides a RAM Policy resource.
+  Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user.
 ---
 
 # st-aws_iam_policy (Resource)
 
-Provides a RAM Policy resource.
+Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user.
 
 ## Example Usage
 
@@ -25,7 +25,7 @@ resource "st-aws_iam_policy" "iam_policy" {
 
 ### Required
 
-- `attached_policy` (List of String) The policy document of the RAM policy.
+- `attached_policies` (List of String) The RAM policies to attach to the user.
 - `policy_name` (String) The policy name.
 - `user_name` (String) The name of the RAM user that attached to the policy.
 

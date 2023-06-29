@@ -36,10 +36,10 @@ type iamPolicyResource struct {
 }
 
 type iamPolicyResourceModel struct {
-	PolicyName     types.String `tfsdk:"policy_name"`
-	AttachedPolicy types.List   `tfsdk:"attached_policy"`
-	Policies       types.List   `tfsdk:"policies"`
-	UserName       types.String `tfsdk:"user_name"`
+	PolicyName       types.String `tfsdk:"policy_name"`
+	AttachedPolicies types.List   `tfsdk:"attached_policies"`
+	Policies         types.List   `tfsdk:"policies"`
+	UserName         types.String `tfsdk:"user_name"`
 }
 
 type policyDetail struct {
@@ -53,14 +53,14 @@ func (r *iamPolicyResource) Metadata(_ context.Context, req resource.MetadataReq
 
 func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provides a RAM Policy resource.",
+		Description: "Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user.",
 		Attributes: map[string]schema.Attribute{
 			"policy_name": schema.StringAttribute{
 				Description: "The policy name.",
 				Required:    true,
 			},
-			"attached_policy": schema.ListAttribute{
-				Description: "The policy document of the RAM policy.",
+			"attached_policies": schema.ListAttribute{
+				Description: "The RAM policies to attach to the user.",
 				Required:    true,
 				ElementType: types.StringType,
 			},
@@ -114,7 +114,7 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 
 	state := &iamPolicyResourceModel{}
 	state.PolicyName = plan.PolicyName
-	state.AttachedPolicy = plan.AttachedPolicy
+	state.AttachedPolicies = plan.AttachedPolicies
 	state.Policies = types.ListValueMust(
 		types.ObjectType{
 			AttrTypes: map[string]attr.Type{
@@ -221,7 +221,7 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	state.PolicyName = plan.PolicyName
-	state.AttachedPolicy = plan.AttachedPolicy
+	state.AttachedPolicies = plan.AttachedPolicies
 	state.Policies = types.ListValueMust(
 		types.ObjectType{
 			AttrTypes: map[string]attr.Type{
@@ -314,12 +314,9 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 	return policiesList, backoff.Retry(createPolicy, reconnectBackoff)
 }
 
-func (r *iamPolicyResource) readPolicy(ctx context.Context, plan *iamPolicyResourceModel) diag.Diagnostics {
+func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyResourceModel) diag.Diagnostics {
 	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
 	getPolicyNameResponse := &awsIamClient.GetPolicyOutput{}
-
-	state := &iamPolicyResourceModel{}
-	state.Policies = plan.Policies
 
 	var err error
 	getPolicy := func() error {
@@ -442,7 +439,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 
 	var getPolicyResponse *awsIamClient.GetPolicyVersionOutput
 
-	for i, policy := range plan.AttachedPolicy.Elements() {
+	for i, policy := range plan.AttachedPolicies.Elements() {
 		policyName := strings.TrimPrefix(strings.TrimSuffix(policy.String(), "\""), "\"")
 		policyArn := r.getPolicyArn(ctx, policyName)
 
@@ -498,7 +495,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 			currentPolicyDocument += finalStatement + ","
 		}
 
-		if i == len(plan.AttachedPolicy.Elements())-1 && (currentLength+30) <= maxLength {
+		if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
 			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
 			if lastCommaIndex >= 0 {
 				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
