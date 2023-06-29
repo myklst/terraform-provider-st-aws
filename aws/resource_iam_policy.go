@@ -476,7 +476,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 
 		// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
 		// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
-		if (currentLength + 30) > 200 {
+		if (currentLength + 30) > maxLength {
 			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
 			if lastCommaIndex >= 0 {
 				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
@@ -489,7 +489,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 			currentPolicyDocument += finalStatement + ","
 		}
 
-		if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= 200 {
+		if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
 			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
 			if lastCommaIndex >= 0 {
 				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
