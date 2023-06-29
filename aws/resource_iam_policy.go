@@ -36,7 +36,6 @@ type iamPolicyResource struct {
 }
 
 type iamPolicyResourceModel struct {
-	PolicyName       types.String `tfsdk:"policy_name"`
 	AttachedPolicies types.List   `tfsdk:"attached_policies"`
 	Policies         types.List   `tfsdk:"policies"`
 	UserName         types.String `tfsdk:"user_name"`
@@ -55,10 +54,6 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 	resp.Schema = schema.Schema{
 		Description: "Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user.",
 		Attributes: map[string]schema.Attribute{
-			"policy_name": schema.StringAttribute{
-				Description: "The policy name.",
-				Required:    true,
-			},
 			"attached_policies": schema.ListAttribute{
 				Description: "The RAM policies to attach to the user.",
 				Required:    true,
@@ -113,7 +108,6 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	state := &iamPolicyResourceModel{}
-	state.PolicyName = plan.PolicyName
 	state.AttachedPolicies = plan.AttachedPolicies
 	state.Policies = types.ListValueMust(
 		types.ObjectType{
@@ -220,7 +214,6 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	state.PolicyName = plan.PolicyName
 	state.AttachedPolicies = plan.AttachedPolicies
 	state.Policies = types.ListValueMust(
 		types.ObjectType{
@@ -277,7 +270,7 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 
 	createPolicy := func() error {
 		for i, policy := range formattedPolicy {
-			policyName := plan.PolicyName.ValueString() + "-" + strconv.Itoa(i+1)
+			policyName := plan.UserName.ValueString() + "-" + strconv.Itoa(i+1)
 
 			createPolicyRequest := &awsIamClient.CreatePolicyInput{
 				PolicyName:     aws.String(policyName),
@@ -293,7 +286,7 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 	}
 
 	for i, policies := range formattedPolicy {
-		policyName := plan.PolicyName.ValueString() + "-" + strconv.Itoa(i+1)
+		policyName := plan.UserName.ValueString() + "-" + strconv.Itoa(i+1)
 
 		policyObj := types.ObjectValueMust(
 			map[string]attr.Type{
@@ -315,6 +308,7 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 }
 
 func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyResourceModel) diag.Diagnostics {
+	policyDetailsState := []*policyDetail{}
 	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
 	getPolicyNameResponse := &awsIamClient.GetPolicyOutput{}
 
@@ -342,6 +336,14 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 			if err != nil {
 				handleAPIError(err)
 			}
+
+			if (getPolicyDocumentResponse.PolicyVersion != nil) && (getPolicyNameResponse.Policy != nil) {
+				policyDetail := policyDetail{
+					PolicyName:     types.StringValue(*getPolicyNameResponse.Policy.PolicyName),
+					PolicyDocument: types.StringValue(*getPolicyDocumentResponse.PolicyVersion.Document),
+				}
+				policyDetailsState = append(policyDetailsState, &policyDetail)
+			}
 		}
 		return nil
 	}
@@ -358,15 +360,7 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 		}
 	}
 
-	policyDetailsState := []*policyDetail{}
-	if (getPolicyDocumentResponse.PolicyVersion != nil) && (getPolicyNameResponse.Policy != nil) {
-		policyDetail := policyDetail{
-			PolicyName:     types.StringValue(*getPolicyNameResponse.Policy.PolicyName),
-			PolicyDocument: types.StringValue(*getPolicyDocumentResponse.PolicyVersion.Document),
-		}
-		policyDetailsState = append(policyDetailsState, &policyDetail)
-	}
-
+	state = &iamPolicyResourceModel{}
 	for _, policy := range policyDetailsState {
 		state.Policies = types.ListValueMust(
 			types.ObjectType{
@@ -482,7 +476,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 
 		// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
 		// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
-		if (currentLength + 30) > maxLength {
+		if (currentLength + 30) > 200 {
 			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
 			if lastCommaIndex >= 0 {
 				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
@@ -495,7 +489,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 			currentPolicyDocument += finalStatement + ","
 		}
 
-		if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
+		if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= 200 {
 			lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
 			if lastCommaIndex >= 0 {
 				currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]

@@ -14,9 +14,8 @@ Provides a RAM Policy resource that manages policy content exceeding character l
 
 ```terraform
 resource "st-aws_iam_policy" "iam_policy" {
-  policy_name     = "test-policy"
-  attached_policy = ["PowerUserAccess", "AWSSupportAccess", "AWSLambdaRole", "AmazonSNSRole"]
-  user_name       = "devopsuser01"
+  attached_policies = ["PowerUserAccess", "AWSSupportAccess", "AWSLambdaRole", "AmazonSNSRole"]
+  user_name         = "devopsuser01"
 }
 ```
 
@@ -26,7 +25,6 @@ resource "st-aws_iam_policy" "iam_policy" {
 ### Required
 
 - `attached_policies` (List of String) The RAM policies to attach to the user.
-- `policy_name` (String) The policy name.
 - `user_name` (String) The name of the RAM user that attached to the policy.
 
 ### Read-Only
