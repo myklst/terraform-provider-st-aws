@@ -325,11 +325,11 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 			json.Unmarshal([]byte(policies.String()), &data)
 
 			policyName := data["policy_name"]
-			policyArn := r.getPolicyArn(ctx, policyName)
+			policyArn, policyVersionId := r.getPolicyArn(ctx, policyName)
 
 			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
-				VersionId: aws.String("v1"),
+				VersionId: aws.String(policyVersionId),
 			})
 			if err != nil {
 				handleAPIError(err)
@@ -398,7 +398,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 		json.Unmarshal([]byte(policies.String()), &data)
 
 		policyName := data["policy_name"]
-		policyArn := r.getPolicyArn(ctx, policyName)
+		policyArn, _ := r.getPolicyArn(ctx, policyName)
 
 		detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
 			PolicyArn: aws.String(policyArn),
@@ -440,13 +440,13 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 
 	for i, policy := range plan.AttachedPolicies.Elements() {
 		policyName := strings.TrimPrefix(strings.TrimSuffix(policy.String(), "\""), "\"")
-		policyArn := r.getPolicyArn(ctx, policyName)
+		policyArn, policyVersionId := r.getPolicyArn(ctx, policyName)
 
 		getPolicy := func() error {
 			var err error
 			getPolicyResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
-				VersionId: aws.String("v1"),
+				VersionId: aws.String(policyVersionId),
 			})
 			if err != nil {
 				handleAPIError(err)
@@ -459,6 +459,9 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 		backoff.Retry(getPolicy, reconnectBackoff)
 
 		tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.PolicyVersion.Document)
+		if err != nil {
+			return nil, err
+		}
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
@@ -519,7 +522,7 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 			json.Unmarshal([]byte(policies.String()), &data)
 
 			policyName := data["policy_name"]
-			policyArn := r.getPolicyArn(ctx, policyName)
+			policyArn, _ := r.getPolicyArn(ctx, policyName)
 
 			attachPolicyToUserRequest := &awsIamClient.AttachUserPolicyInput{
 				PolicyArn: aws.String(policyArn),
@@ -538,7 +541,7 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 	return backoff.Retry(attachPolicyToUser, reconnectBackoff)
 }
 
-func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string) {
+func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string) {
 	listPolicies := func() error {
 		listPoliciesResponse, err := r.client.ListPolicies(ctx, &awsIamClient.ListPoliciesInput{
 			MaxItems: aws.Int32(1000),
@@ -551,6 +554,7 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 		for _, policyObj := range listPoliciesResponse.Policies {
 			if *policyObj.PolicyName == policyName {
 				policyArn = *policyObj.Arn
+				policyVersionId = *policyObj.DefaultVersionId
 			}
 		}
 		return nil
@@ -560,7 +564,7 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
 	backoff.Retry(listPolicies, reconnectBackoff)
 
-	return policyArn
+	return policyArn, policyVersionId
 }
 
 func handleAPIError(err error) error {

@@ -38,6 +38,7 @@ func New() provider.Provider {
 type awsServicesProvider struct{}
 
 type awsServicesProviderModel struct {
+	Region    types.String `tfsdk:"region"`
 	AccessKey types.String `tfsdk:"access_key"`
 	SecretKey types.String `tfsdk:"secret_key"`
 }
@@ -53,6 +54,10 @@ func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest
 		Description: "The AWS provider is used to interact with the many resources supported by AWS. " +
 			"The provider needs to be configured with the proper credentials before it can be used.",
 		Attributes: map[string]schema.Attribute{
+			"region": schema.StringAttribute{
+				Description: "Region for AWS Services API. May also be provided via AWS_REGION environment variable.",
+				Optional:    true,
+			},
 			"access_key": schema.StringAttribute{
 				Description: "URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable",
 				Optional:    true,
@@ -77,6 +82,17 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 
 	// If practitioner provided a configuration value for any of the
 	// attributes, it must be a known value.
+
+	if config.Region.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("region"),
+			"Unknown AWS Services region",
+			"The provider cannot create the AWS Services API client as there is"+
+				"an unknown configuration value for the AWS Services API region."+
+				"Set the value statically in the configuration, or use the AWS_REGION"+
+				"environment variable.",
+		)
+	}
 
 	if config.AccessKey.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
@@ -106,7 +122,13 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 
 	// Default values to environment variables, but override
 	// with Terraform configuration value if set.
-	var accessKey, secretKey string
+	var region, accessKey, secretKey string
+	if !config.Region.IsNull() {
+		region = config.Region.ValueString()
+	} else {
+		region = os.Getenv("AWS_REGION")
+	}
+
 	if !config.AccessKey.IsNull() {
 		accessKey = config.AccessKey.ValueString()
 	} else {
@@ -121,6 +143,18 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 
 	// If any of the expected configuration are missing, return
 	// errors with provider-specific guidance.
+
+	if region == "" {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("region"),
+			"Missing AWS Services API region",
+			"The provider cannot create the AWS Services API client as there is a "+
+				"missing or empty value for the AWS Services API region. Set the "+
+				"region value in the configuration or use the AWS_REGION "+
+				"environment variable. If either is already set, ensure the value "+
+				"is not empty.",
+		)
+	}
 
 	if accessKey == "" {
 		resp.Diagnostics.AddAttributeError(
@@ -153,7 +187,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	awsCfg, err := awsConfig.LoadDefaultConfig(
 		ctx,
 		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-		awsConfig.WithRegion("ap-southeast-1"),
+		awsConfig.WithRegion(region),
 	)
 	if err != nil {
 		resp.Diagnostics.AddError(
