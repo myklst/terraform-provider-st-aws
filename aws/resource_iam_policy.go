@@ -15,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -260,6 +261,10 @@ func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+}
+
+func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
 func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyResourceModel) (policiesList []attr.Value, err error) {
