@@ -472,39 +472,46 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) diag.Diagnostics {
 	data := make(map[string]string)
 
-	for _, policies := range state.Policies.Elements() {
-		json.Unmarshal([]byte(policies.String()), &data)
+	removePolicy := func() error {
+		for _, policies := range state.Policies.Elements() {
+			json.Unmarshal([]byte(policies.String()), &data)
 
-		policyName := data["policy_name"]
-		policyArn, _ := r.getPolicyArn(ctx, policyName)
+			policyName := data["policy_name"]
+			policyArn, _ := r.getPolicyArn(ctx, policyName)
 
-		detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
-			PolicyArn: aws.String(policyArn),
-			UserName:  aws.String(state.UserName.ValueString()),
-		}
+			detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
+				PolicyArn: aws.String(policyArn),
+				UserName:  aws.String(state.UserName.ValueString()),
+			}
 
-		deletePolicyRequest := &awsIamClient.DeletePolicyInput{
-			PolicyArn: aws.String(policyArn),
-		}
+			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
+				PolicyArn: aws.String(policyArn),
+			}
 
-		if _, err := r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
-			return diag.Diagnostics{
-				diag.NewErrorDiagnostic(
-					"[API ERROR] Failed to Detach Policy from User.",
-					err.Error(),
-				),
+			if _, err := r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
+				handleAPIError(err)
+			}
+
+			if _, err := r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
+				handleAPIError(err)
 			}
 		}
 
-		if _, err := r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
-			return diag.Diagnostics{
-				diag.NewErrorDiagnostic(
-					"[API ERROR] Failed to Delete Policy.",
-					err.Error(),
-				),
-			}
+		return nil
+	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err := backoff.Retry(removePolicy, reconnectBackoff)
+	if err != nil {
+		return diag.Diagnostics{
+			diag.NewErrorDiagnostic(
+				"[API ERROR] Failed to Delete Policy",
+				err.Error(),
+			),
 		}
 	}
+
 	return nil
 }
 
