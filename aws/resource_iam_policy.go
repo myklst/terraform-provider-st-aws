@@ -15,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -262,11 +263,93 @@ func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 }
 
-func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyResourceModel) (policiesList []attr.Value, err error) {
-	formattedPolicy, err := r.getPolicyDocument(ctx, plan)
-	if err != nil {
-		return nil, err
+func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	policyDetailsState := []*policyDetail{}
+	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
+	policyNames := strings.Split(req.ID, ",")
+	var username string
+
+	var err error
+	getPolicy := func() error {
+		for _, policyName := range policyNames {
+			policyName = strings.ReplaceAll(policyName, " ", "")
+
+			// Retrieves the policy document for the policy
+			policyArn, policyVersionId := r.getPolicyArn(ctx, policyName)
+
+			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
+				PolicyArn: aws.String(policyArn),
+				VersionId: aws.String(policyVersionId),
+			})
+			if err != nil {
+				handleAPIError(err)
+			}
+
+			// Retrieves the name of the user attached to the policy.
+			getPolicyEntities, err := r.client.ListEntitiesForPolicy(ctx, &awsIamClient.ListEntitiesForPolicyInput{
+				PolicyArn: aws.String(policyArn),
+			})
+			if err != nil {
+				handleAPIError(err)
+			}
+
+			if getPolicyDocumentResponse.PolicyVersion != nil {
+				policyDocument, err := url.QueryUnescape(*getPolicyDocumentResponse.PolicyVersion.Document)
+				if err != nil {
+					resp.Diagnostics.AddError(
+						"[API ERROR] Failed to Convert the Policy Document.",
+						err.Error(),
+					)
+				}
+
+				policyDetail := policyDetail{
+					PolicyName:     types.StringValue(policyName),
+					PolicyDocument: types.StringValue(policyDocument),
+				}
+				policyDetailsState = append(policyDetailsState, &policyDetail)
+			}
+
+			if getPolicyEntities.PolicyUsers != nil {
+				for _, user := range getPolicyEntities.PolicyUsers {
+					username = *user.UserName
+				}
+			}
+		}
+		return nil
 	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err = backoff.Retry(getPolicy, reconnectBackoff)
+	if err != nil {
+		return
+	}
+
+	var policyList []policyDetail
+	for _, policy := range policyDetailsState {
+		policies := policyDetail{
+			PolicyName:     types.StringValue(policy.PolicyName.ValueString()),
+			PolicyDocument: types.StringValue(policy.PolicyDocument.ValueString()),
+		}
+
+		policyList = append(policyList, policies)
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_name"), username)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("policies"), policyList)...)
+
+	if !resp.Diagnostics.HasError() {
+		resp.Diagnostics.AddWarning(
+			"Unable to Set the attached_policies Attribute",
+			"After running terraform import, Terraform will not automatically set the attached_policies attributes."+
+				"To ensure that all attributes defined in the Terraform configuration are set, you need to run terraform apply."+
+				"This command will apply the changes and set the desired attributes according to your configuration.",
+		)
+	}
+}
+
+func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyResourceModel) (policiesList []attr.Value, err error) {
+	formattedPolicy, _ := r.getPolicyDocument(ctx, plan)
 
 	createPolicy := func() error {
 		for i, policy := range formattedPolicy {
@@ -320,11 +403,11 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 			json.Unmarshal([]byte(policies.String()), &data)
 
 			policyName := data["policy_name"]
-			policyArn := r.getPolicyArn(ctx, policyName)
+			policyArn, policyVersionId := r.getPolicyArn(ctx, policyName)
 
 			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
-				VersionId: aws.String("v1"),
+				VersionId: aws.String(policyVersionId),
 			})
 			if err != nil {
 				handleAPIError(err)
@@ -389,59 +472,66 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) diag.Diagnostics {
 	data := make(map[string]string)
 
-	for _, policies := range state.Policies.Elements() {
-		json.Unmarshal([]byte(policies.String()), &data)
+	removePolicy := func() error {
+		for _, policies := range state.Policies.Elements() {
+			json.Unmarshal([]byte(policies.String()), &data)
 
-		policyName := data["policy_name"]
-		policyArn := r.getPolicyArn(ctx, policyName)
+			policyName := data["policy_name"]
+			policyArn, _ := r.getPolicyArn(ctx, policyName)
 
-		detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
-			PolicyArn: aws.String(policyArn),
-			UserName:  aws.String(state.UserName.ValueString()),
-		}
+			detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
+				PolicyArn: aws.String(policyArn),
+				UserName:  aws.String(state.UserName.ValueString()),
+			}
 
-		deletePolicyRequest := &awsIamClient.DeletePolicyInput{
-			PolicyArn: aws.String(policyArn),
-		}
+			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
+				PolicyArn: aws.String(policyArn),
+			}
 
-		if _, err := r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
-			return diag.Diagnostics{
-				diag.NewErrorDiagnostic(
-					"[API ERROR] Failed to Detach Policy from User.",
-					err.Error(),
-				),
+			if _, err := r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
+				handleAPIError(err)
+			}
+
+			if _, err := r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
+				handleAPIError(err)
 			}
 		}
 
-		if _, err := r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
-			return diag.Diagnostics{
-				diag.NewErrorDiagnostic(
-					"[API ERROR] Failed to Delete Policy.",
-					err.Error(),
-				),
-			}
+		return nil
+	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err := backoff.Retry(removePolicy, reconnectBackoff)
+	if err != nil {
+		return diag.Diagnostics{
+			diag.NewErrorDiagnostic(
+				"[API ERROR] Failed to Delete Policy",
+				err.Error(),
+			),
 		}
 	}
+
 	return nil
 }
 
-func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPolicyResourceModel) (finalPolicyDocument []string, err error) {
+func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPolicyResourceModel) ([]string, diag.Diagnostics) {
 	currentLength := 0
 	currentPolicyDocument := ""
 	appendedPolicyDocument := make([]string, 0)
-	finalPolicyDocument = make([]string, 0)
+	finalPolicyDocument := make([]string, 0)
 
 	var getPolicyResponse *awsIamClient.GetPolicyVersionOutput
 
 	for i, policy := range plan.AttachedPolicies.Elements() {
 		policyName := strings.TrimPrefix(strings.TrimSuffix(policy.String(), "\""), "\"")
-		policyArn := r.getPolicyArn(ctx, policyName)
+		policyArn, policyVersionId := r.getPolicyArn(ctx, policyName)
 
 		getPolicy := func() error {
 			var err error
 			getPolicyResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
-				VersionId: aws.String("v1"),
+				VersionId: aws.String(policyVersionId),
 			})
 			if err != nil {
 				handleAPIError(err)
@@ -454,16 +544,34 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 		backoff.Retry(getPolicy, reconnectBackoff)
 
 		tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.PolicyVersion.Document)
+		if err != nil {
+			return nil, diag.Diagnostics{
+				diag.NewErrorDiagnostic(
+					"[API ERROR] Failed to Retrieve the Policy Document.",
+					err.Error(),
+				),
+			}
+		}
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
-			return nil, err
+			return nil, diag.Diagnostics{
+				diag.NewErrorDiagnostic(
+					"[API ERROR] Failed to Convert the Policy Document.",
+					err.Error(),
+				),
+			}
 		}
 
 		statementArr := data["Statement"].([]interface{})
 		statementBytes, err := json.MarshalIndent(statementArr, "", "  ")
 		if err != nil {
-			return nil, err
+			return nil, diag.Diagnostics{
+				diag.NewErrorDiagnostic(
+					"[API ERROR] Failed to Convert the Policy Document.",
+					err.Error(),
+				),
+			}
 		}
 
 		removeSpaces := strings.ReplaceAll(string(statementBytes), " ", "")
@@ -514,7 +622,7 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 			json.Unmarshal([]byte(policies.String()), &data)
 
 			policyName := data["policy_name"]
-			policyArn := r.getPolicyArn(ctx, policyName)
+			policyArn, _ := r.getPolicyArn(ctx, policyName)
 
 			attachPolicyToUserRequest := &awsIamClient.AttachUserPolicyInput{
 				PolicyArn: aws.String(policyArn),
@@ -533,7 +641,7 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 	return backoff.Retry(attachPolicyToUser, reconnectBackoff)
 }
 
-func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string) {
+func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string) {
 	listPolicies := func() error {
 		listPoliciesResponse, err := r.client.ListPolicies(ctx, &awsIamClient.ListPoliciesInput{
 			MaxItems: aws.Int32(1000),
@@ -546,6 +654,7 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 		for _, policyObj := range listPoliciesResponse.Policies {
 			if *policyObj.PolicyName == policyName {
 				policyArn = *policyObj.Arn
+				policyVersionId = *policyObj.DefaultVersionId
 			}
 		}
 		return nil
@@ -555,7 +664,7 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
 	backoff.Retry(listPolicies, reconnectBackoff)
 
-	return policyArn
+	return policyArn, policyVersionId
 }
 
 func handleAPIError(err error) error {
