@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awsCloudfrontClient "github.com/aws/aws-sdk-go-v2/service/cloudfront"
 	awsCloudfrontTypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
@@ -25,6 +25,7 @@ func NewCdnDomainDataSource() datasource.DataSource {
 
 type cdnDomainDataSource struct {
 	client *awsCloudfrontClient.Client
+	config *awsClientsConfig
 }
 
 type cdnDomainDataSourceModel struct {
@@ -96,6 +97,7 @@ func (d *cdnDomainDataSource) Configure(_ context.Context, req datasource.Config
 	}
 
 	d.client = req.ProviderData.(awsClients).cloudfrontClient
+	d.config = req.ProviderData.(awsClients).config
 }
 
 func (d *cdnDomainDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
@@ -120,23 +122,31 @@ func (d *cdnDomainDataSource) Read(ctx context.Context, req datasource.ReadReque
 	}
 
 	if initClient {
-		cfg, err := config.LoadDefaultConfig(ctx)
+		if region == "" {
+			region = d.config.region
+		}
+		if accessKey == "" {
+			accessKey = d.config.accessKey
+		}
+		if secretKey == "" {
+			secretKey = d.config.secretKey
+		}
+
+		awsCfg, err := awsConfig.LoadDefaultConfig(
+			ctx,
+			awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+			awsConfig.WithRegion(region),
+		)
 		if err != nil {
 			resp.Diagnostics.AddError(
-				"[INTERNAL ERROR] Failed to Retrieve Client Config",
+				"[INTERNAL ERROR] Failed to Init Client Config",
 				"This is an error in provider, please contact the provider developers.\n\n"+
 					"Error: "+err.Error(),
 			)
 			return
 		}
 
-		if region != "" {
-			cfg.Region = region
-		}
-		if accessKey != "" && secretKey != "" {
-			cfg.Credentials = credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
-		}
-		d.client = awsCloudfrontClient.NewFromConfig(cfg)
+		d.client = awsCloudfrontClient.NewFromConfig(awsCfg)
 	}
 
 	domainName := plan.DomainName.ValueString()

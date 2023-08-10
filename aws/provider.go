@@ -19,8 +19,15 @@ import (
 
 // Wrapper of AWS clients
 type awsClients struct {
+	config           *awsClientsConfig
 	cloudfrontClient *awsCloudfrontClient.Client
 	route53Client    *awsRoute53Client.Client
+}
+
+type awsClientsConfig struct {
+	region    string
+	accessKey string
+	secretKey string
 }
 
 // Ensure the implementation satisfies the expected interfaces
@@ -197,6 +204,11 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	route53Client := awsRoute53Client.NewFromConfig(awsCfg)
 
 	clients := awsClients{
+		config: &awsClientsConfig{
+			region:    region,
+			accessKey: accessKey,
+			secretKey: secretKey,
+		},
 		cloudfrontClient: cloudfrontClient,
 		route53Client:    route53Client,
 	}
