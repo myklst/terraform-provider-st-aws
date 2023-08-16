@@ -14,6 +14,7 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awsCloudfrontClient "github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awsIamClient "github.com/aws/aws-sdk-go-v2/service/iam"
 	awsRoute53Client "github.com/aws/aws-sdk-go-v2/service/route53"
 )
 
@@ -22,6 +23,7 @@ type awsClients struct {
 	config           *awsClientsConfig
 	cloudfrontClient *awsCloudfrontClient.Client
 	route53Client    *awsRoute53Client.Client
+	iamClient        *awsIamClient.Client
 }
 
 type awsClientsConfig struct {
@@ -60,9 +62,8 @@ func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest
 			"The provider needs to be configured with the proper credentials before it can be used.",
 		Attributes: map[string]schema.Attribute{
 			"region": schema.StringAttribute{
-				Description: "Region for AWS Services API. May also be provided " +
-					"via AWS_REGION environment variable. Default to use ap-southeast-1.",
-				Optional: true,
+				Description: "Region for AWS Services API. May also be provided via AWS_REGION environment variable.",
+				Optional:    true,
 			},
 			"access_key": schema.StringAttribute{
 				Description: "URI for AWS Services API. May also be provided via " +
@@ -90,6 +91,17 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 
 	// If practitioner provided a configuration value for any of the
 	// attributes, it must be a known value.
+
+	if config.Region.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("region"),
+			"Unknown AWS Services region",
+			"The provider cannot create the AWS Services API client as there is"+
+				"an unknown configuration value for the AWS Services API region."+
+				"Set the value statically in the configuration, or use the AWS_REGION"+
+				"environment variable.",
+		)
+	}
 
 	if config.AccessKey.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
@@ -123,11 +135,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	if !config.Region.IsNull() {
 		region = config.Region.ValueString()
 	} else {
-		if regionEnv, exist := os.LookupEnv("AWS_REGION"); exist {
-			region = regionEnv
-		} else {
-			region = "ap-southeast-1"
-		}
+		region = os.Getenv("AWS_REGION")
 	}
 
 	if !config.AccessKey.IsNull() {
@@ -148,11 +156,12 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	if region == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("region"),
-			"Missing AWS Services API Region",
+			"Missing AWS Services API region",
 			"The provider cannot create the AWS Services API client as there is a "+
 				"missing or empty value for the AWS Services API region. Set the "+
-				"region value in the configuration or use the AWS_REGION environment "+
-				"variable. If either is already set, ensure the value is not empty.",
+				"region value in the configuration or use the AWS_REGION "+
+				"environment variable. If either is already set, ensure the value "+
+				"is not empty.",
 		)
 	}
 
@@ -202,6 +211,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	// Initialize Clients
 	cloudfrontClient := awsCloudfrontClient.NewFromConfig(awsCfg)
 	route53Client := awsRoute53Client.NewFromConfig(awsCfg)
+	iamClient := awsIamClient.NewFromConfig(awsCfg)
 
 	clients := awsClients{
 		config: &awsClientsConfig{
@@ -211,6 +221,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 		},
 		cloudfrontClient: cloudfrontClient,
 		route53Client:    route53Client,
+		iamClient:        iamClient,
 	}
 
 	resp.DataSourceData = clients
@@ -227,5 +238,6 @@ func (p *awsServicesProvider) DataSources(_ context.Context) []func() datasource
 func (p *awsServicesProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewRoute53Resource,
+		NewIamPolicyResource,
 	}
 }
