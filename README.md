@@ -61,9 +61,10 @@ The reason behind every resources and data sources are stated as below:
 
 - **st-aws_cloudfront_domain**
 
-  Official AWS Terraform provider does not support querying AWS Cloudfront distributions using domain name through
-  [*aws_cloudfront_distribution*](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/cloudfront_distribution).
+  - Official AWS Terraform provider does not support querying AWS Cloudfront distributions using domain name through
+    [*aws_cloudfront_distribution*](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/cloudfront_distribution).
 
+  - Added client_config block to allow overriding the Provider configuration.
 
 References
 ----------
