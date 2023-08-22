@@ -20,9 +20,16 @@ import (
 
 // Wrapper of AWS clients
 type awsClients struct {
+	config           *awsClientsConfig
 	cloudfrontClient *awsCloudfrontClient.Client
 	route53Client    *awsRoute53Client.Client
 	iamClient        *awsIamClient.Client
+}
+
+type awsClientsConfig struct {
+	region    string
+	accessKey string
+	secretKey string
 }
 
 // Ensure the implementation satisfies the expected interfaces
@@ -59,13 +66,15 @@ func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest
 				Optional:    true,
 			},
 			"access_key": schema.StringAttribute{
-				Description: "URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable",
-				Optional:    true,
+				Description: "URI for AWS Services API. May also be provided via " +
+					"AWS_ACCESS_KEY_ID environment variable",
+				Optional: true,
 			},
 			"secret_key": schema.StringAttribute{
-				Description: "API key for AWS Services API. May also be provided via AWS_SECRET_ACCESS_KEY environment variable",
-				Optional:    true,
-				Sensitive:   true,
+				Description: "API key for AWS Services API. May also be provided " +
+					"via AWS_SECRET_ACCESS_KEY environment variable",
+				Optional:  true,
+				Sensitive: true,
 			},
 		},
 	}
@@ -159,10 +168,10 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	if accessKey == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("access_key"),
-			"Missing AWS Services API access key",
+			"Missing AWS Services API Access Key",
 			"The provider cannot create the AWS Services API client as there is a "+
-				"missing or empty value for the AWS Services API Access Key. Set the "+
-				"Access Key value in the configuration or use the AWS_ACCESS_KEY_ID "+
+				"missing or empty value for the AWS Services API access key. Set the "+
+				"access key value in the configuration or use the AWS_ACCESS_KEY_ID "+
 				"environment variable. If either is already set, ensure the value "+
 				"is not empty.",
 		)
@@ -171,10 +180,10 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	if secretKey == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("secret_key"),
-			"Missing AWS Services secret key",
+			"Missing AWS Services Secret Key",
 			"The provider cannot create the AWS Services API client as there is "+
-				"a missing or empty value for the AWS Services API Secret Key. Set "+
-				"the API Secret key value in the configuration or use the AWS_SECRET_ACCESS_KEY "+
+				"a missing or empty value for the AWS Services API secret key. Set "+
+				"the API secret key value in the configuration or use the AWS_SECRET_ACCESS_KEY "+
 				"environment variable. If either is already set, ensure the value "+
 				"is not empty.",
 		)
@@ -205,6 +214,11 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	iamClient := awsIamClient.NewFromConfig(awsCfg)
 
 	clients := awsClients{
+		config: &awsClientsConfig{
+			region:    region,
+			accessKey: accessKey,
+			secretKey: secretKey,
+		},
 		cloudfrontClient: cloudfrontClient,
 		route53Client:    route53Client,
 		iamClient:        iamClient,
