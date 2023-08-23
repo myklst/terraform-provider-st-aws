@@ -8,6 +8,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	awsCloudfrontClient "github.com/aws/aws-sdk-go-v2/service/cloudfront"
 	awsCloudfrontTypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
 )
@@ -23,12 +25,20 @@ func NewCdnDomainDataSource() datasource.DataSource {
 
 type cdnDomainDataSource struct {
 	client *awsCloudfrontClient.Client
+	config *awsClientsConfig
 }
 
 type cdnDomainDataSourceModel struct {
-	DomainName  types.String `tfsdk:"domain_name"`
-	DomainCName types.String `tfsdk:"domain_cname"`
-	Origins     types.List   `tfsdk:"origins"`
+	ClientConfig *clientConfig `tfsdk:"client_config"`
+	DomainName   types.String  `tfsdk:"domain_name"`
+	DomainCName  types.String  `tfsdk:"domain_cname"`
+	Origins      types.List    `tfsdk:"origins"`
+}
+
+type clientConfig struct {
+	Region    types.String `tfsdk:"region"`
+	AccessKey types.String `tfsdk:"access_key"`
+	SecretKey types.String `tfsdk:"secret_key"`
 }
 
 func (d *cdnDomainDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -53,6 +63,31 @@ func (d *cdnDomainDataSource) Schema(_ context.Context, req datasource.SchemaReq
 				Computed:    true,
 			},
 		},
+		Blocks: map[string]schema.Block{
+			"client_config": schema.SingleNestedBlock{
+				Description: "Config to override default client created in Provider. " +
+					"This block will not be recorded in state file.",
+				Attributes: map[string]schema.Attribute{
+					"region": schema.StringAttribute{
+						Description: "The region of the Cloudfront domains. Default to " +
+							"use region configured in the provider.",
+						Optional: true,
+					},
+					"access_key": schema.StringAttribute{
+						Description: "The access key that have permissions to list " +
+							"Cloudfront domains. Default to use access key configured " +
+							"in the provider.",
+						Optional: true,
+					},
+					"secret_key": schema.StringAttribute{
+						Description: "The secret key that have permissions to lsit " +
+							"Cloudfront domains. Default to use secret key configured " +
+							"in the provider.",
+						Optional: true,
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -62,17 +97,59 @@ func (d *cdnDomainDataSource) Configure(_ context.Context, req datasource.Config
 	}
 
 	d.client = req.ProviderData.(awsClients).cloudfrontClient
+	d.config = req.ProviderData.(awsClients).config
 }
 
 func (d *cdnDomainDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var state cdnDomainDataSourceModel
-	diags := req.Config.Get(ctx, &state)
+	var plan, state *cdnDomainDataSourceModel
+	diags := req.Config.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	domainName := state.DomainName.ValueString()
+	if plan.ClientConfig == nil {
+		plan.ClientConfig = &clientConfig{}
+	}
+
+	initClient := false
+	region := plan.ClientConfig.Region.ValueString()
+	accessKey := plan.ClientConfig.AccessKey.ValueString()
+	secretKey := plan.ClientConfig.SecretKey.ValueString()
+
+	if region != "" || accessKey != "" || secretKey != "" {
+		initClient = true
+	}
+
+	if initClient {
+		if region == "" {
+			region = d.config.region
+		}
+		if accessKey == "" {
+			accessKey = d.config.accessKey
+		}
+		if secretKey == "" {
+			secretKey = d.config.secretKey
+		}
+
+		awsCfg, err := awsConfig.LoadDefaultConfig(
+			ctx,
+			awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+			awsConfig.WithRegion(region),
+		)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"[INTERNAL ERROR] Failed to Init Client Config",
+				"This is an error in provider, please contact the provider developers.\n\n"+
+					"Error: "+err.Error(),
+			)
+			return
+		}
+
+		d.client = awsCloudfrontClient.NewFromConfig(awsCfg)
+	}
+
+	domainName := plan.DomainName.ValueString()
 
 	if domainName == "" {
 		resp.Diagnostics.AddAttributeError(
@@ -95,12 +172,15 @@ func (d *cdnDomainDataSource) Read(ctx context.Context, req datasource.ReadReque
 		return
 	}
 	for _, cloudfront := range awsCloudfronts.DistributionList.Items {
-		if cloudfront.Aliases.Items[0] == domainName {
+		if len(cloudfront.Aliases.Items) > 0 && cloudfront.Aliases.Items[0] == domainName {
 			awsCloudfrontRaw = cloudfront
 			cloudfrontMatched = true
 		}
 	}
 
+	state = &cdnDomainDataSourceModel{
+		Origins: types.ListNull(types.StringType),
+	}
 	if cloudfrontMatched {
 		state.DomainName = types.StringValue(awsCloudfrontRaw.Aliases.Items[0])
 		state.DomainCName = types.StringValue(*awsCloudfrontRaw.DomainName)
