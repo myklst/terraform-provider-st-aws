@@ -424,14 +424,12 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 				handleAPIError(err)
 			}
 
-			if getPolicyDocumentResponse != nil && getPolicyNameResponse != nil {
-				if (getPolicyDocumentResponse.PolicyVersion != nil) && (getPolicyNameResponse.Policy != nil) {
-					policyDetail := policyDetail{
-						PolicyName:     types.StringValue(*getPolicyNameResponse.Policy.PolicyName),
-						PolicyDocument: types.StringValue(*getPolicyDocumentResponse.PolicyVersion.Document),
-					}
-					policyDetailsState = append(policyDetailsState, &policyDetail)
+			if (getPolicyDocumentResponse.PolicyVersion != nil) && (getPolicyNameResponse.Policy != nil) {
+				policyDetail := policyDetail{
+					PolicyName:     types.StringValue(*getPolicyNameResponse.Policy.PolicyName),
+					PolicyDocument: types.StringValue(*getPolicyDocumentResponse.PolicyVersion.Document),
 				}
+				policyDetailsState = append(policyDetailsState, &policyDetail)
 			}
 		}
 		return nil
@@ -449,32 +447,8 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 		}
 	}
 
-	if len(policyDetailsState) > 0 {
-		state = &iamPolicyResourceModel{}
-		for _, policy := range policyDetailsState {
-			state.Policies = types.ListValueMust(
-				types.ObjectType{
-					AttrTypes: map[string]attr.Type{
-						"policy_name":     types.StringType,
-						"policy_document": types.StringType,
-					},
-				},
-				[]attr.Value{
-					types.ObjectValueMust(
-						map[string]attr.Type{
-							"policy_name":     types.StringType,
-							"policy_document": types.StringType,
-						},
-						map[string]attr.Value{
-							"policy_name":     types.StringValue(policy.PolicyName.ValueString()),
-							"policy_document": types.StringValue(policy.PolicyDocument.ValueString()),
-						},
-					),
-				},
-			)
-		}
-	} else {
-		state.AttachedPolicies = types.ListNull(types.StringType)
+	state = &iamPolicyResourceModel{}
+	for _, policy := range policyDetailsState {
 		state.Policies = types.ListValueMust(
 			types.ObjectType{
 				AttrTypes: map[string]attr.Type{
@@ -489,13 +463,12 @@ func (r *iamPolicyResource) readPolicy(ctx context.Context, state *iamPolicyReso
 						"policy_document": types.StringType,
 					},
 					map[string]attr.Value{
-						"policy_name":     types.StringNull(),
-						"policy_document": types.StringNull(),
+						"policy_name":     types.StringValue(policy.PolicyName.ValueString()),
+						"policy_document": types.StringValue(policy.PolicyDocument.ValueString()),
 					},
 				),
 			},
 		)
-		state.UserName = types.StringNull()
 	}
 	return nil
 }
