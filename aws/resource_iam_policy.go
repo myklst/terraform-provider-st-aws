@@ -3,7 +3,6 @@ package aws
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -54,7 +53,11 @@ func (r *iamPolicyResource) Metadata(_ context.Context, req resource.MetadataReq
 
 func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user.",
+		Description: "Provides a RAM Policy resource that manages policy content " +
+			"exceeding character limits by splitting it into smaller segments. " +
+			"These segments are combined to form a complete policy attached to the user. " +
+			"However, the policy like `ReadOnlyAccess` that exceed the maximum length " +
+			"of a policy, they will be attached directly to the user.",
 		Attributes: map[string]schema.Attribute{
 			"attached_policies": schema.ListAttribute{
 				Description: "The RAM policies to attach to the user.",
@@ -363,13 +366,13 @@ func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.Import
 }
 
 func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyResourceModel) (policiesList []attr.Value, err error) {
-	formattedPolicy, err := r.getPolicyDocument(ctx, plan)
+	combinedPolicyStatements, notCombinedPolicies, err := r.getPolicyDocument(ctx, plan)
 	if err != nil {
 		return nil, err
 	}
 
 	createPolicy := func() error {
-		for i, policy := range formattedPolicy {
+		for i, policy := range combinedPolicyStatements {
 			policyName := plan.UserName.ValueString() + "-" + strconv.Itoa(i+1)
 
 			createPolicyRequest := &awsIamClient.CreatePolicyInput{
@@ -385,7 +388,7 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 		return nil
 	}
 
-	for i, policies := range formattedPolicy {
+	for i, policy := range combinedPolicyStatements {
 		policyName := plan.UserName.ValueString() + "-" + strconv.Itoa(i+1)
 
 		policyObj := types.ObjectValueMust(
@@ -395,7 +398,25 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 			},
 			map[string]attr.Value{
 				"policy_name":     types.StringValue(policyName),
-				"policy_document": types.StringValue(policies),
+				"policy_document": types.StringValue(policy),
+			},
+		)
+
+		policiesList = append(policiesList, policyObj)
+	}
+
+	// These policies will be attached directly to the user since splitting the
+	// policy "statement" will be hitting the limitation of "maximum number of
+	// attached policies" easily.
+	for _, policy := range notCombinedPolicies {
+		policyObj := types.ObjectValueMust(
+			map[string]attr.Type{
+				"policy_name":     types.StringType,
+				"policy_document": types.StringType,
+			},
+			map[string]attr.Value{
+				"policy_name":     types.StringValue(policy.policyName),
+				"policy_document": types.StringValue(policy.policyDocument),
 			},
 		)
 
@@ -534,12 +555,16 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	return nil
 }
 
-func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPolicyResourceModel) (finalPolicyDocument []string, err error) {
+type simplePolicy struct {
+	policyName     string
+	policyDocument string
+}
+
+func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPolicyResourceModel) (finalPolicyDocument []string, excludedPolicy []simplePolicy, err error) {
 	policyName := ""
 	currentLength := 0
 	currentPolicyDocument := ""
 	appendedPolicyDocument := make([]string, 0)
-	finalPolicyDocument = make([]string, 0)
 
 	var getPolicyResponse *awsIamClient.GetPolicyVersionOutput
 
@@ -568,41 +593,55 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 			if getPolicyResponse.PolicyVersion != nil {
 				tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.PolicyVersion.Document)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 
-				var data map[string]interface{}
-				if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
-					return nil, err
+				skipCombinePolicy := false
+				// If the policy itself have more than 6144 characters, then skip the combine
+				// policy part since splitting the policy "statement" will be hitting the
+				// limitation of "maximum number of attached policies" easily.
+				if len(tempPolicyDocument) > maxLength {
+					excludedPolicy = append(excludedPolicy, simplePolicy{
+						policyName:     policyName,
+						policyDocument: tempPolicyDocument,
+					})
+					skipCombinePolicy = true
 				}
 
-				statementArr := data["Statement"].([]interface{})
-				statementBytes, err := json.MarshalIndent(statementArr, "", "  ")
-				if err != nil {
-					return nil, err
-				}
-
-				removeSpaces := strings.ReplaceAll(string(statementBytes), " ", "")
-				replacer := strings.NewReplacer("\n", "")
-				removeParagraphs := replacer.Replace(removeSpaces)
-
-				finalStatement := strings.Trim(removeParagraphs, "[]")
-
-				currentLength += len(finalStatement)
-
-				// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
-				// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
-				if (currentLength + 30) > maxLength {
-					lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
-					if lastCommaIndex >= 0 {
-						currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
+				if !skipCombinePolicy {
+					var data map[string]interface{}
+					if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
+						return nil, nil, err
 					}
 
-					appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
-					currentPolicyDocument = finalStatement + ","
-					currentLength = len(finalStatement)
-				} else {
-					currentPolicyDocument += finalStatement + ","
+					statementArr := data["Statement"].([]interface{})
+					statementBytes, err := json.MarshalIndent(statementArr, "", "  ")
+					if err != nil {
+						return nil, nil, err
+					}
+
+					removeSpaces := strings.ReplaceAll(string(statementBytes), " ", "")
+					replacer := strings.NewReplacer("\n", "")
+					removeParagraphs := replacer.Replace(removeSpaces)
+
+					finalStatement := strings.Trim(removeParagraphs, "[]")
+
+					currentLength += len(finalStatement)
+
+					// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
+					// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
+					if (currentLength + 30) > maxLength {
+						lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
+						if lastCommaIndex >= 0 {
+							currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
+						}
+
+						appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
+						currentPolicyDocument = finalStatement + ","
+						currentLength = len(finalStatement)
+					} else {
+						currentPolicyDocument += finalStatement + ","
+					}
 				}
 
 				if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
@@ -615,7 +654,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 				}
 			}
 		} else {
-			return nil, errors.New(fmt.Sprintf("The %v policy not found.", policyName))
+			return nil, nil, fmt.Errorf("The %v policy not found.", policyName)
 		}
 	}
 
@@ -625,7 +664,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 		}
 	}
 
-	return finalPolicyDocument, nil
+	return finalPolicyDocument, excludedPolicy, nil
 }
 
 func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPolicyResourceModel) (err error) {
