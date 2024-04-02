@@ -162,20 +162,33 @@ func (d *cdnDomainDataSource) Read(ctx context.Context, req datasource.ReadReque
 
 	var awsCloudfrontRaw awsCloudfrontTypes.DistributionSummary
 	cloudfrontMatched := false
-	awsCloudfronts, err := d.client.ListDistributions(ctx, &awsCloudfrontClient.ListDistributionsInput{})
 
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"[API ERROR] Failed to query cloudfront domains",
-			err.Error(),
-		)
-		return
-	}
-	for _, cloudfront := range awsCloudfronts.DistributionList.Items {
-		if len(cloudfront.Aliases.Items) > 0 && cloudfront.Aliases.Items[0] == domainName {
-			awsCloudfrontRaw = cloudfront
-			cloudfrontMatched = true
+	listDistributionsParams := &awsCloudfrontClient.ListDistributionsInput{}
+listDistributionsPagination:
+	for {
+		awsCloudfronts, err := d.client.ListDistributions(ctx, listDistributionsParams)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"[API ERROR] Failed to query cloudfront domains",
+				err.Error(),
+			)
+			return
 		}
+
+		for _, cloudfront := range awsCloudfronts.DistributionList.Items {
+			if len(cloudfront.Aliases.Items) > 0 && cloudfront.Aliases.Items[0] == domainName {
+				awsCloudfrontRaw = cloudfront
+				cloudfrontMatched = true
+				break listDistributionsPagination
+			}
+		}
+
+		// break if last page.
+		if !*awsCloudfronts.DistributionList.IsTruncated {
+			break
+		}
+
+		listDistributionsParams.Marker = awsCloudfronts.DistributionList.NextMarker
 	}
 
 	state = &cdnDomainDataSourceModel{
