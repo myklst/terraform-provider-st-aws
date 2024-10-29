@@ -29,6 +29,6 @@ provider "st-aws" {}
 
 ### Optional
 
-- `region` (String) Region for AWS Services API. May also be provided via AWS_REGION environment variable. Default to use ap-southeast-1.
-- `access_key` (String) URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable
-- `secret_key` (String, Sensitive) API key for AWS Services API. May also be provided via AWS_SECRET_ACCESS_KEY environment variable
+- `region` (String) Region for AWS Services API. May also be provided via AWS_REGION environment variable.
+- `access_key` (String) URI for AWS Services API. May also be provided via AWS_ACCESS_KEY_ID environment variable.
+- `secret_key` (String, Sensitive) API key for AWS Services API. May also be provided via AWS_SECRET_ACCESS_KEY environment variable.

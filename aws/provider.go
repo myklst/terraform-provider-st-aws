@@ -67,12 +67,12 @@ func (p *awsServicesProvider) Schema(_ context.Context, _ provider.SchemaRequest
 			},
 			"access_key": schema.StringAttribute{
 				Description: "URI for AWS Services API. May also be provided via " +
-					"AWS_ACCESS_KEY_ID environment variable",
+					"AWS_ACCESS_KEY_ID environment variable.",
 				Optional: true,
 			},
 			"secret_key": schema.StringAttribute{
 				Description: "API key for AWS Services API. May also be provided " +
-					"via AWS_SECRET_ACCESS_KEY environment variable",
+					"via AWS_SECRET_ACCESS_KEY environment variable.",
 				Optional:  true,
 				Sensitive: true,
 			},
@@ -231,8 +231,8 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 func (p *awsServicesProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewCdnDomainDataSource,
+		NewIamUsersDataSource,
 	}
-	//return nil
 }
 
 func (p *awsServicesProvider) Resources(_ context.Context) []func() resource.Resource {
