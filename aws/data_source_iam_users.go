@@ -65,7 +65,7 @@ func (d *iamUsersDataSource) Schema(_ context.Context, req datasource.SchemaRequ
 							Computed:    true,
 						},
 						"create_date": schema.StringAttribute{
-							Description: "The date and time, in ISO 8601 date-time string format, when the user was created",
+							Description: "The date and time, in ISO 8601 date-time string format, when the user was created.",
 							Computed:    true,
 						},
 						"path": schema.StringAttribute{

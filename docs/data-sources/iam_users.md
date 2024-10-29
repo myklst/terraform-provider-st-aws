@@ -37,7 +37,7 @@ data "st-aws_iam_users" "aws_iam_users" {
 Read-Only:
 
 - `arn` (String) The Amazon Resource Name (ARN) that identifies the user.
-- `create_date` (String) The date and time, in ISO 8601 date-time string format, when the user was created
+- `create_date` (String) The date and time, in ISO 8601 date-time string format, when the user was created.
 - `password_last_used` (String) The date and time, in ISO 8601 date-time string format, when the user's password was last used to sign in to an Amazon Web Services website.
 - `path` (String) The path to the user.
 - `tags` (Map of String) A list of tags that are associated with the user.
