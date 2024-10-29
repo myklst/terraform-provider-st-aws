@@ -66,6 +66,12 @@ The reason behind every resources and data sources are stated as below:
 
   - Added client_config block to allow overriding the Provider configuration.
 
+- **st-aws_iam_users**
+
+  The data source
+  [*aws_iam_users*](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_users)
+  in official AWS Terraform provider does not support querying AWS IAM users using tags.
+
 References
 ----------
 

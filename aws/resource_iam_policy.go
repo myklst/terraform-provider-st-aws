@@ -654,7 +654,7 @@ func (r *iamPolicyResource) getPolicyDocument(ctx context.Context, plan *iamPoli
 				}
 			}
 		} else {
-			return nil, nil, fmt.Errorf("The %v policy not found.", policyName)
+			return nil, nil, fmt.Errorf("the %v policy not found", policyName)
 		}
 	}
 
