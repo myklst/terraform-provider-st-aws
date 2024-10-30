@@ -3,12 +3,12 @@
 page_title: "st-aws_iam_users Data Source - st-aws"
 subcategory: ""
 description: |-
-  Use this data source to retrieve list of IAM users.
+  Use this data source to retrieve list of IAM users with attached tags.
 ---
 
 # st-aws_iam_users (Data Source)
 
-Use this data source to retrieve list of IAM users.
+Use this data source to retrieve list of IAM users with attached tags.
 
 ## Example Usage
 
