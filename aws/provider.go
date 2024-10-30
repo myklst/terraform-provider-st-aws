@@ -231,6 +231,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 func (p *awsServicesProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewCdnDomainDataSource,
+		NewIamRolesDataSource,
 		NewIamUsersDataSource,
 	}
 }
