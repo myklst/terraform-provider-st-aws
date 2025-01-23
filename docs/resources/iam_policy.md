@@ -14,8 +14,8 @@ Provides a RAM Policy resource that manages policy content exceeding character l
 
 ```terraform
 resource "st-aws_iam_policy" "iam_policy" {
-  attached_policies = ["PowerUserAccess", "AWSSupportAccess", "AWSLambdaRole", "AmazonSNSRole"]
   user_name         = "devopsuser01"
+  attached_policies = ["IAMFullAccess", "PowerUserAccess", "AWSSupportAccess", ]
 }
 ```
 
@@ -29,7 +29,27 @@ resource "st-aws_iam_policy" "iam_policy" {
 
 ### Read-Only
 
-- `policies` (Attributes List) A list of policies. (see [below for nested schema](#nestedatt--policies))
+- `attached_policies_detail` (Attributes List) A list of policies. Used to compare whether policy has been changed outside of Terraform (see [below for nested schema](#nestedatt--attached_policies_detail))
+- `combined_policies_detail` (Attributes List) A list of combined policies that are attached to users. (see [below for nested schema](#nestedatt--combined_policies_detail))
+- `policies` (Attributes List) [Deprecated] A list of policies. (see [below for nested schema](#nestedatt--policies))
+
+<a id="nestedatt--attached_policies_detail"></a>
+### Nested Schema for `attached_policies_detail`
+
+Read-Only:
+
+- `policy_document` (String) The policy document of the RAM policy.
+- `policy_name` (String) The policy name.
+
+
+<a id="nestedatt--combined_policies_detail"></a>
+### Nested Schema for `combined_policies_detail`
+
+Read-Only:
+
+- `policy_document` (String) The policy document of the RAM policy.
+- `policy_name` (String) The policy name.
+
 
 <a id="nestedatt--policies"></a>
 ### Nested Schema for `policies`
