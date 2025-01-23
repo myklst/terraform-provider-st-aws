@@ -3,12 +3,12 @@
 page_title: "st-aws_iam_policy Resource - st-aws"
 subcategory: ""
 description: |-
-  Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like ReadOnlyAccess that exceed the maximum length of a policy, they will be attached directly to the user.
+  Provides a IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like ReadOnlyAccess that exceed the maximum length of a policy, they will be attached directly to the user.
 ---
 
 # st-aws_iam_policy (Resource)
 
-Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like `ReadOnlyAccess` that exceed the maximum length of a policy, they will be attached directly to the user.
+Provides a IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like `ReadOnlyAccess` that exceed the maximum length of a policy, they will be attached directly to the user.
 
 ## Example Usage
 
@@ -24,8 +24,8 @@ resource "st-aws_iam_policy" "iam_policy" {
 
 ### Required
 
-- `attached_policies` (List of String) The RAM policies to attach to the user.
-- `user_name` (String) The name of the RAM user that attached to the policy.
+- `attached_policies` (List of String) The IAM policies to attach to the user.
+- `user_name` (String) The name of the IAM user that attached to the policy.
 
 ### Read-Only
 
@@ -38,7 +38,7 @@ resource "st-aws_iam_policy" "iam_policy" {
 
 Read-Only:
 
-- `policy_document` (String) The policy document of the RAM policy.
+- `policy_document` (String) The policy document of the IAM policy.
 - `policy_name` (String) The policy name.
 
 
@@ -47,7 +47,7 @@ Read-Only:
 
 Read-Only:
 
-- `policy_document` (String) The policy document of the RAM policy.
+- `policy_document` (String) The policy document of the IAM policy.
 - `policy_name` (String) The policy name.
 
 
@@ -56,7 +56,7 @@ Read-Only:
 
 Read-Only:
 
-- `policy_document` (String) The policy document of the RAM policy.
+- `policy_document` (String) The policy document of the IAM policy.
 - `policy_name` (String) The policy name.
 
 

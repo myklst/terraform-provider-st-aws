@@ -59,18 +59,18 @@ func (r *iamPolicyResource) Metadata(_ context.Context, req resource.MetadataReq
 
 func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provides a RAM Policy resource that manages policy content " +
+		Description: "Provides a IAM Policy resource that manages policy content " +
 			"exceeding character limits by splitting it into smaller segments. " +
 			"These segments are combined to form a complete policy attached to the user. " +
 			"However, the policy like `ReadOnlyAccess` that exceed the maximum length " +
 			"of a policy, they will be attached directly to the user.",
 		Attributes: map[string]schema.Attribute{
 			"user_name": schema.StringAttribute{
-				Description: "The name of the RAM user that attached to the policy.",
+				Description: "The name of the IAM user that attached to the policy.",
 				Required:    true,
 			},
 			"attached_policies": schema.ListAttribute{
-				Description: "The RAM policies to attach to the user.",
+				Description: "The IAM policies to attach to the user.",
 				Required:    true,
 				ElementType: types.StringType,
 			},
@@ -84,7 +84,7 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 							Computed:    true,
 						},
 						"policy_document": schema.StringAttribute{
-							Description: "The policy document of the RAM policy.",
+							Description: "The policy document of the IAM policy.",
 							Computed:    true,
 						},
 					},
@@ -100,7 +100,7 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 							Computed:    true,
 						},
 						"policy_document": schema.StringAttribute{
-							Description: "The policy document of the RAM policy.",
+							Description: "The policy document of the IAM policy.",
 							Computed:    true,
 						},
 					},
@@ -118,7 +118,7 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 							Computed:    true,
 						},
 						"policy_document": schema.StringAttribute{
-							Description: "The policy document of the RAM policy.",
+							Description: "The policy document of the IAM policy.",
 							Computed:    true,
 						},
 					},
@@ -257,7 +257,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		"warning",
 		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", state.UserName),
 		readAttachedPolicyNotExistErr,
-		"The policy that will be used to combine policies had been removed on AliCloud, next apply with update will prompt error:",
+		"The policy that will be used to combine policies had been removed on AWS, next apply with update will prompt error:",
 	)
 	addDiagnostics(
 		&resp.Diagnostics,
@@ -321,7 +321,7 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		"error",
 		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", state.UserName),
 		readAttachedPolicyNotExistErr,
-		"The policy that will be used to combine policies had been removed on AliCloud:",
+		"The policy that will be used to combine policies had been removed on AWS:",
 	)
 	addDiagnostics(
 		&resp.Diagnostics,
@@ -663,7 +663,7 @@ func (r *iamPolicyResource) readCombinedPolicy(ctx context.Context, state *iamPo
 		return nil, unexpectedErrs
 	}
 
-	// If the combined policies not found from AliCloud, that it might be deleted
+	// If the combined policies not found from AWS, that it might be deleted
 	// from outside Terraform. Set the state to Unknown to trigger state changes
 	// and Update() function.
 	if len(notExistErrs) > 0 {
@@ -694,7 +694,7 @@ func (r *iamPolicyResource) readAttachedPolicy(ctx context.Context, state *iamPo
 		return nil, unexpectedErrs
 	}
 
-	// If the combined policies not found from AliCloud, that it might be deleted
+	// If the combined policies not found from AWS, that it might be deleted
 	// from outside Terraform. Set the state to Unknown to trigger state changes
 	// and Update() function.
 	if len(notExistErrs) > 0 {
@@ -706,11 +706,11 @@ func (r *iamPolicyResource) readAttachedPolicy(ctx context.Context, state *iamPo
 	return notExistErrs, nil
 }
 
-// fetchPolicies retrieve policy document through AliCloud SDK with backoff retry.
+// fetchPolicies retrieve policy document through AWS SDK with backoff retry.
 //
 // Parameters:
-//   - policiesName: List of RAM policies name.
-//   - policyTypes: List of RAM policy types to retrieve.
+//   - policiesName: List of IAM policies name.
+//   - policyTypes: List of IAM policy types to retrieve.
 //
 // Returns:
 //   - policiesDetail: List of retrieved policies detail.
@@ -768,7 +768,7 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 		if err != nil && errors.As(err, &ae) {
 			switch ae.ErrorCode() {
 			// The error handling here is different from the one in backoff retry
-			// function. The error handling here represent the RAM policy is not
+			// function. The error handling here represent the IAM policy is not
 			// found in all policy types.
 			case "NoSuchEntity":
 				notExistError = append(notExistError, err)
@@ -787,11 +787,11 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 }
 
 // checkPoliciesDrift compare the recorded AttachedPoliciesDetail documents with
-// the latest RAM policy documents on AliCloud, and trigger Update() if policy
+// the latest IAM policy documents on AWS, and trigger Update() if policy
 // drift is detected.
 //
 // Parameters:
-//   - newState: New attached policy details that returned from AliCloud SDK.
+//   - newState: New attached policy details that returned from AWS SDK.
 //   - oriState: Original policy details that are recorded in Terraform state.
 //
 // Returns:
@@ -868,7 +868,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	return nil
 }
 
-// attachPolicyToUser attach the RAM policy to user through AliCloud SDK.
+// attachPolicyToUser attach the IAM policy to user through AWS SDK.
 //
 // Parameters:
 //   - state: The recorded state configurations.
