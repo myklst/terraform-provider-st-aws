@@ -717,7 +717,7 @@ func (r *iamPolicyResource) readAttachedPolicy(ctx context.Context, state *iamPo
 //   - notExistError: List of allowed not exist errors to be used as warning messages instead, return empty list if no errors.
 //   - unexpectedError: List of unexpected errors to be used as normal error messages, return empty list if no errors.
 func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []string) (policiesDetail []*policyDetail, notExistError, unexpectedError []error) {
-	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{} //TODO LIONEL MESSI!!!!!!!1
+	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
 	getPolicyNameResponse := &awsIamClient.GetPolicyOutput{}
 	var err error
 	var ae smithy.APIError
