@@ -3,19 +3,19 @@
 page_title: "st-aws_iam_policy Resource - st-aws"
 subcategory: ""
 description: |-
-  Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like ReadOnlyAccess that exceed the maximum length of a policy, they will be attached directly to the user.
+  Provides a IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like ReadOnlyAccess that exceed the maximum length of a policy, they will be attached directly to the user.
 ---
 
 # st-aws_iam_policy (Resource)
 
-Provides a RAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like `ReadOnlyAccess` that exceed the maximum length of a policy, they will be attached directly to the user.
+Provides a IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like `ReadOnlyAccess` that exceed the maximum length of a policy, they will be attached directly to the user.
 
 ## Example Usage
 
 ```terraform
 resource "st-aws_iam_policy" "iam_policy" {
-  attached_policies = ["PowerUserAccess", "AWSSupportAccess", "AWSLambdaRole", "AmazonSNSRole"]
   user_name         = "devopsuser01"
+  attached_policies = ["IAMFullAccess", "PowerUserAccess", "AWSSupportAccess", ]
 }
 ```
 
@@ -24,19 +24,39 @@ resource "st-aws_iam_policy" "iam_policy" {
 
 ### Required
 
-- `attached_policies` (List of String) The RAM policies to attach to the user.
-- `user_name` (String) The name of the RAM user that attached to the policy.
+- `attached_policies` (List of String) The IAM policies to attach to the user.
+- `user_name` (String) The name of the IAM user that attached to the policy.
 
 ### Read-Only
 
-- `policies` (Attributes List) A list of policies. (see [below for nested schema](#nestedatt--policies))
+- `attached_policies_detail` (Attributes List) A list of policies. Used to compare whether policy has been changed outside of Terraform (see [below for nested schema](#nestedatt--attached_policies_detail))
+- `combined_policies_detail` (Attributes List) A list of combined policies that are attached to users. (see [below for nested schema](#nestedatt--combined_policies_detail))
+- `policies` (Attributes List) [Deprecated] A list of policies. (see [below for nested schema](#nestedatt--policies))
+
+<a id="nestedatt--attached_policies_detail"></a>
+### Nested Schema for `attached_policies_detail`
+
+Read-Only:
+
+- `policy_document` (String) The policy document of the IAM policy.
+- `policy_name` (String) The policy name.
+
+
+<a id="nestedatt--combined_policies_detail"></a>
+### Nested Schema for `combined_policies_detail`
+
+Read-Only:
+
+- `policy_document` (String) The policy document of the IAM policy.
+- `policy_name` (String) The policy name.
+
 
 <a id="nestedatt--policies"></a>
 ### Nested Schema for `policies`
 
 Read-Only:
 
-- `policy_document` (String) The policy document of the RAM policy.
+- `policy_document` (String) The policy document of the IAM policy.
 - `policy_name` (String) The policy name.
 
 

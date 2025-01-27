@@ -42,5 +42,3 @@ Optional:
 - `region` (String) The region of the Cloudfront domains. Default to use region configured in the provider.
 - `access_key` (String) The access key that have permissions to list Cloudfront domains. Default to use access key configured in the provider.
 - `secret_key` (String) The secret key that have permissions to lsit Cloudfront domains. Default to use secret key configured in the provider.
-
-
