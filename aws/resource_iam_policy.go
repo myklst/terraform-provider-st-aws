@@ -767,9 +767,6 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 		// Handle permanent error returned from API.
 		if err != nil && errors.As(err, &ae) {
 			switch ae.ErrorCode() {
-			// The error handling here is different from the one in backoff retry
-			// function. The error handling here represent the IAM policy is not
-			// found in all policy types.
 			case "NoSuchEntity":
 				notExistError = append(notExistError, err)
 			default:
