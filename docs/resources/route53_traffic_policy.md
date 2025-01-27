@@ -82,4 +82,10 @@ resource "st-aws_route53_traffic_policy" "traffic_policy" {
 - `id` (String) Traffic Policy ID.
 - `version` (Number) Traffic Policy version
 
+## Import
 
+Route53 Traffic Policy can be imported using the id, e.g.
+
+```
+terraform import aws_route53_traffic_policy.traffic_policy 36da3cc-46a1-4628-8fcb-fb21de3222ae
+```
