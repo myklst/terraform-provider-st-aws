@@ -222,7 +222,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 	// TODO: Remove in next version when 'Policies' is moved to CombinedPoliciesDetail.
 	if len(oriState.CombinedPolicesDetail) == 0 && len(oriState.Policies) != 0 {
 		oriState.CombinedPolicesDetail = oriState.Policies
-		state.Policies = nil
+		oriState.Policies = nil
 	}
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
@@ -244,7 +244,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 	// Set state so that Terraform will trigger update if there are changes in state.
 	setStateDiags := resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(setStateDiags...)
-	if resp.Diagnostics.HasError() {
+	if resp.Diagnostics.WarningsCount() > 0 || resp.Diagnostics.HasError() {
 		return
 	}
 
