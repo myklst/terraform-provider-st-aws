@@ -158,12 +158,12 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 	state.AttachedPoliciesDetail = attachedPolicies
 	state.CombinedPolicesDetail = combinedPolicies
 
-	err := r.attachPolicyToUser(ctx, state)
+	attachPolicyToUserErr := r.attachPolicyToUser(ctx, state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
 		"[API ERROR] Failed to Attach Policy to User.",
-		[]error{err},
+		attachPolicyToUserErr,
 		"",
 	)
 
@@ -284,7 +284,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		"warning",
 		fmt.Sprintf("[API WARNING] Policy Drift Detected for %v.", state.UserName),
 		[]error{compareAttachedPoliciesErr},
-		"",
+		"The resources will be updated in the next terraform apply.",
 	)
 
 	setStateDiags = resp.State.Set(ctx, &state)
@@ -335,8 +335,18 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	removePolicyDiags := r.removePolicy(ctx, state)
-	resp.Diagnostics.Append(removePolicyDiags...)
+	removePolicyErr := r.removePolicy(ctx, state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.UserName),
+		removePolicyErr,
+		"",
+	)
+
+	state.CombinedPolicesDetail = nil
+	setStateDiags := resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -355,12 +365,12 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 	state.AttachedPoliciesDetail = attachedPolicies
 	state.CombinedPolicesDetail = combinedPolicies
 
-	err := r.attachPolicyToUser(ctx, state)
+	attachPolicyToUserErr := r.attachPolicyToUser(ctx, state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
 		"[API ERROR] Failed to Attach Policy to User.",
-		[]error{err},
+		attachPolicyToUserErr,
 		"",
 	)
 
@@ -385,7 +395,7 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	setStateDiags := resp.State.Set(ctx, &state)
+	setStateDiags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(setStateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -407,8 +417,14 @@ func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteReque
 		state.Policies = nil
 	}
 
-	removePolicyDiags := r.removePolicy(ctx, state)
-	resp.Diagnostics.Append(removePolicyDiags...)
+	removePolicyUnexpectedErr := r.removePolicy(ctx, state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.UserName),
+		removePolicyUnexpectedErr,
+		"",
+	)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -426,7 +442,7 @@ func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.Import
 			policyName = strings.ReplaceAll(policyName, " ", "")
 
 			// Retrieves the policy document for the policy
-			policyArn, policyVersionId := r.getPolicyArn(ctx, policyName)
+			policyArn, policyVersionId, _ := r.getPolicyArn(ctx, policyName)
 
 			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
@@ -719,11 +735,15 @@ func (r *iamPolicyResource) readAttachedPolicy(ctx context.Context, state *iamPo
 func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []string) (policiesDetail []*policyDetail, notExistError, unexpectedError []error) {
 	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
 	getPolicyNameResponse := &awsIamClient.GetPolicyOutput{}
-	var err error
 	var ae smithy.APIError
 
 	for _, attachedPolicy := range policiesName {
-		policyArn, policyVersionId := r.getPolicyArn(ctx, attachedPolicy)
+		policyArn, policyVersionId, err := r.getPolicyArn(ctx, attachedPolicy)
+
+		if err != nil {
+			unexpectedError = append(unexpectedError, err)
+			continue
+		}
 
 		if policyArn == "" && policyVersionId == "" {
 			notExistError = append(notExistError, fmt.Errorf("policy %v does not exist", attachedPolicy))
@@ -738,11 +758,7 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 
 			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, getPolicyDocumentRequest)
 			if err != nil {
-				apiErr := handleAPIError(err)
-				if apiErr == backoff.Permanent(err) {
-					return apiErr
-				}
-				unexpectedError = append(unexpectedError, err)
+				return handleAPIError(err)
 			}
 
 			getPolicyNameRequest := &awsIamClient.GetPolicyInput{
@@ -751,18 +767,14 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 
 			getPolicyNameResponse, err = r.client.GetPolicy(ctx, getPolicyNameRequest)
 			if err != nil {
-				apiErr := handleAPIError(err)
-				if apiErr == backoff.Permanent(err) {
-					return apiErr
-				}
-				unexpectedError = append(unexpectedError, err)
+				return handleAPIError(err)
 			}
 			return nil
 		}
 
 		reconnectBackoff := backoff.NewExponentialBackOff()
 		reconnectBackoff.MaxElapsedTime = 30 * time.Second
-		backoff.Retry(getPolicy, reconnectBackoff)
+		err = backoff.Retry(getPolicy, reconnectBackoff)
 
 		// Handle permanent error returned from API.
 		if err != nil && errors.As(err, &ae) {
@@ -824,10 +836,17 @@ func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyReso
 //
 // Parameters:
 //   - state: The recorded state configurations.
-func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) diag.Diagnostics {
+func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
+	var ae smithy.APIError
+
 	removePolicy := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
-			policyArn, _ := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
+			policyArn, _, err := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
+
+			if err != nil {
+				unexpectedError = append(unexpectedError, err)
+				continue
+			}
 
 			detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
 				PolicyArn: aws.String(policyArn),
@@ -838,12 +857,20 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				PolicyArn: aws.String(policyArn),
 			}
 
-			if _, err := r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
-				handleAPIError(err)
+			if _, err = r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
+				if errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity" {
+					// If error is NoSuchEntity, proceed without interruption
+				} else {
+					return handleAPIError(err)
+				}
 			}
 
-			if _, err := r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
-				handleAPIError(err)
+			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
+				if errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity" {
+					// If error is NoSuchEntity, proceed without interruption
+				} else {
+					return handleAPIError(err)
+				}
 			}
 		}
 
@@ -854,12 +881,8 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
 	err := backoff.Retry(removePolicy, reconnectBackoff)
 	if err != nil {
-		return diag.Diagnostics{
-			diag.NewErrorDiagnostic(
-				"[API ERROR] Failed to Delete Policy",
-				err.Error(),
-			),
-		}
+		unexpectedError = append(unexpectedError, err)
+		return unexpectedError
 	}
 
 	return nil
@@ -872,10 +895,15 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 //
 // Returns:
 //   - err: Error.
-func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPolicyResourceModel) (err error) {
+func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
 	attachPolicyToUser := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
-			policyArn, _ := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
+			policyArn, _, err := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
+
+			if err != nil {
+				unexpectedError = append(unexpectedError, err)
+				continue
+			}
 
 			attachPolicyToUserRequest := &awsIamClient.AttachUserPolicyInput{
 				PolicyArn: aws.String(policyArn),
@@ -891,12 +919,17 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	return backoff.Retry(attachPolicyToUser, reconnectBackoff)
+	err := backoff.Retry(attachPolicyToUser, reconnectBackoff)
+	if err != nil {
+		unexpectedError = append(unexpectedError, err)
+
+	}
+
+	return unexpectedError
 }
 
-func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string) {
+func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string, err error) {
 	var listPoliciesResponse *awsIamClient.ListPoliciesOutput
-	var err error
 
 	listPolicies := func() error {
 		listPoliciesResponse, err = r.client.ListPolicies(ctx, &awsIamClient.ListPoliciesInput{
@@ -911,7 +944,7 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	backoff.Retry(listPolicies, reconnectBackoff)
+	err = backoff.Retry(listPolicies, reconnectBackoff)
 
 	for _, policyObj := range listPoliciesResponse.Policies {
 		if *policyObj.PolicyName == policyName {
@@ -920,7 +953,7 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 		}
 	}
 
-	return policyArn, policyVersionId
+	return policyArn, policyVersionId, err
 }
 
 func handleAPIError(err error) error {
