@@ -151,6 +151,9 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 		errors,
 		"",
 	)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	state := &iamPolicyResourceModel{}
 	state.UserName = plan.UserName
@@ -166,6 +169,9 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 		attachPolicyToUserErr,
 		"",
 	)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Create policy are not expected to have not found warning.
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
@@ -183,7 +189,6 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 		readCombinedPolicyErr,
 		"",
 	)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -270,10 +275,6 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 	// Set state so that Terraform will trigger update if there are changes in state.
 	setStateDiags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(setStateDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	if resp.Diagnostics.WarningsCount() > 0 || resp.Diagnostics.HasError() {
 		return
 	}
@@ -330,7 +331,6 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		readAttachedPolicyErr,
 		"",
 	)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -343,6 +343,9 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		removePolicyErr,
 		"",
 	)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	state.CombinedPolicesDetail = nil
 	setStateDiags := resp.State.Set(ctx, &state)
@@ -359,6 +362,9 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		errors,
 		"",
 	)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	state.UserName = plan.UserName
 	state.AttachedPolicies = plan.AttachedPolicies
@@ -373,6 +379,9 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		attachPolicyToUserErr,
 		"",
 	)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Create policy are not expected to have not found warning.
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
@@ -390,7 +399,6 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 		readCombinedPolicyErr,
 		"",
 	)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
