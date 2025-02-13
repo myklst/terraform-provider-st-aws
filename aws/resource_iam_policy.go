@@ -624,6 +624,7 @@ func (r *iamPolicyResource) combinePolicyDocument(ctx context.Context, attachedP
 				PolicyName:     attachedPolicy.PolicyName,
 				PolicyDocument: types.StringValue(tempPolicyDocument),
 			})
+			continue
 		}
 
 		var data map[string]interface{}
@@ -632,8 +633,7 @@ func (r *iamPolicyResource) combinePolicyDocument(ctx context.Context, attachedP
 			return nil, nil, nil, errList
 		}
 
-		statementArr := data["Statement"].([]interface{})
-		statementBytes, err := json.Marshal(statementArr)
+		statementBytes, err := json.Marshal(data["Statement"])
 		if err != nil {
 			errList = append(errList, err)
 			return nil, nil, nil, errList
