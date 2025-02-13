@@ -285,7 +285,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		"warning",
 		fmt.Sprintf("[API WARNING] Policy Drift Detected for %v.", state.UserName),
 		[]error{compareAttachedPoliciesErr},
-		"The resources will be updated in the next terraform apply.",
+		"This resource will be updated in the next terraform apply.",
 	)
 
 	setStateDiags = resp.State.Set(ctx, &state)
@@ -866,17 +866,18 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 			}
 
 			if _, err = r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
-				if errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity" {
-					// If error is NoSuchEntity, proceed without interruption
-				} else {
+				// Ignore error where the policy is not attached
+				// to the user as it is intented to detach the
+				// policy from user.
+				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 					return handleAPIError(err)
 				}
 			}
 
 			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
-				if errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity" {
-					// If error is NoSuchEntity, proceed without interruption
-				} else {
+				// Ignore error where the policy had been deleted
+				// as it is intended to delete the IAM policy.
+				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 					return handleAPIError(err)
 				}
 			}
@@ -889,8 +890,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
 	err := backoff.Retry(removePolicy, reconnectBackoff)
 	if err != nil {
-		unexpectedError = append(unexpectedError, err)
-		return unexpectedError
+		return append(unexpectedError, err)
 	}
 
 	return nil
@@ -927,10 +927,8 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	err := backoff.Retry(attachPolicyToUser, reconnectBackoff)
-	if err != nil {
+	if err := backoff.Retry(attachPolicyToUser, reconnectBackoff); err != nil {
 		unexpectedError = append(unexpectedError, err)
-
 	}
 
 	return unexpectedError
