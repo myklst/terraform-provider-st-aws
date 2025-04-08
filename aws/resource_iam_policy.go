@@ -846,6 +846,7 @@ func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyReso
 //   - state: The recorded state configurations.
 func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
+	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
 
 	removePolicy := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
@@ -861,6 +862,10 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				UserName:  aws.String(state.UserName.ValueString()),
 			}
 
+			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
+				PolicyArn: aws.String(policyArn),
+			}
+
 			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
 				PolicyArn: aws.String(policyArn),
 			}
@@ -871,6 +876,40 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				// policy from user.
 				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 					return handleAPIError(err)
+				}
+			}
+
+			// An IAM policy versions must be removed before deleting
+			// the policy. Refer to the below offcial IAM documents:
+			// https://docs.aws.amazon.com/IAM/latest/APIReference/API_DeletePolicy.html
+			if listPolicyVersionsResponse, err = r.client.ListPolicyVersions(ctx, listPolicyVersionsRequest); err != nil {
+				if errors.As(err, &ae) {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if ae.ErrorCode() != "NoSuchEntity" {
+						return handleAPIError(err)
+					}
+				}
+			}
+
+			for _, policyVersion := range listPolicyVersionsResponse.Versions {
+				// Default version could not be deleted.
+				if policyVersion.IsDefaultVersion {
+					continue
+				}
+				deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
+					PolicyArn: aws.String(policyArn),
+					VersionId: aws.String(*policyVersion.VersionId),
+				}
+
+				if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
+						return handleAPIError(err)
+					}
 				}
 			}
 
