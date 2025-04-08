@@ -879,6 +879,9 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 
+			// An IAM policy versions must be removed before deleting
+			// the policy. Refer to the below offcial IAM documents:
+			// https://docs.aws.amazon.com/IAM/latest/APIReference/API_DeletePolicy.html
 			if listPolicyVersionsResponse, err = r.client.ListPolicyVersions(ctx, listPolicyVersionsRequest); err != nil {
 				if errors.As(err, &ae) {
 					// Ignore error where the policy version does
@@ -888,23 +891,24 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 						return handleAPIError(err)
 					}
 				}
-			} else {
-				for _, policyVersion := range listPolicyVersionsResponse.Versions {
-					deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
-						PolicyArn: aws.String(policyArn),
-						VersionId: aws.String(*policyVersion.VersionId),
-					}
+			}
 
-					if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
-						// Ignore error where the policy version does
-						// not exists in the policy as it was intended
-						// to delete the policy version.
-						// Ignore error where the policy is unable to
-						// delete the policy version as it is deleted by
-						// DeletePolicyVersion()
-						if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" && ae.ErrorCode() != "DeleteConflict" {
-							return handleAPIError(err)
-						}
+			for _, policyVersion := range listPolicyVersionsResponse.Versions {
+				// Default version could not be deleted.
+				if policyVersion.IsDefaultVersion {
+					continue
+				}
+				deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
+					PolicyArn: aws.String(policyArn),
+					VersionId: aws.String(*policyVersion.VersionId),
+				}
+
+				if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
+						return handleAPIError(err)
 					}
 				}
 			}
