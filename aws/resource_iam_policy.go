@@ -846,6 +846,7 @@ func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyReso
 //   - state: The recorded state configurations.
 func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
+	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
 
 	removePolicy := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
@@ -861,6 +862,10 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				UserName:  aws.String(state.UserName.ValueString()),
 			}
 
+			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
+				PolicyArn: aws.String(policyArn),
+			}
+
 			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
 				PolicyArn: aws.String(policyArn),
 			}
@@ -871,6 +876,33 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				// policy from user.
 				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 					return handleAPIError(err)
+				}
+			}
+
+			if listPolicyVersionsResponse, err = r.client.ListPolicyVersions(ctx, listPolicyVersionsRequest); err != nil {
+				if errors.As(err, &ae) {
+					if ae.ErrorCode() != "NoSuchEntity" {
+						return handleAPIError(err)
+					}
+				}
+			} else {
+				for _, policyVersion := range listPolicyVersionsResponse.Versions {
+					deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
+						PolicyArn: aws.String(policyArn),
+						VersionId: aws.String(*policyVersion.VersionId),
+					}
+
+					if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
+						// Ignore error where the policy version does
+						// not exists in the policy as it was intended
+						// to delete the policy version.
+						// Ignore error where the policy is unable to
+						// delete the policy version as it is deleted by
+						// DeletePolicyVersion()
+						if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" && ae.ErrorCode() != "DeleteConflict" {
+							return handleAPIError(err)
+						}
+					}
 				}
 			}
 
