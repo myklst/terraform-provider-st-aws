@@ -16,6 +16,7 @@ import (
 	awsCloudfrontClient "github.com/aws/aws-sdk-go-v2/service/cloudfront"
 	awsIamClient "github.com/aws/aws-sdk-go-v2/service/iam"
 	awsRoute53Client "github.com/aws/aws-sdk-go-v2/service/route53"
+	awsSsoAdminClient "github.com/aws/aws-sdk-go-v2/service/ssoadmin"
 )
 
 // Wrapper of AWS clients
@@ -24,6 +25,7 @@ type awsClients struct {
 	cloudfrontClient *awsCloudfrontClient.Client
 	route53Client    *awsRoute53Client.Client
 	iamClient        *awsIamClient.Client
+	ssoAdminClient   *awsSsoAdminClient.Client
 }
 
 type awsClientsConfig struct {
@@ -212,6 +214,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 	cloudfrontClient := awsCloudfrontClient.NewFromConfig(awsCfg)
 	route53Client := awsRoute53Client.NewFromConfig(awsCfg)
 	iamClient := awsIamClient.NewFromConfig(awsCfg)
+	ssoAdminClient := awsSsoAdminClient.NewFromConfig(awsCfg)
 
 	clients := awsClients{
 		config: &awsClientsConfig{
@@ -222,6 +225,7 @@ func (p *awsServicesProvider) Configure(ctx context.Context, req provider.Config
 		cloudfrontClient: cloudfrontClient,
 		route53Client:    route53Client,
 		iamClient:        iamClient,
+		ssoAdminClient:   ssoAdminClient,
 	}
 
 	resp.DataSourceData = clients
@@ -240,5 +244,8 @@ func (p *awsServicesProvider) Resources(_ context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewRoute53Resource,
 		NewIamPolicyResource,
+		NewIamRolePolicyResource,
+		NewIamUserPolicyResource,
+		NewIamPermissionSetPolicyResource,
 	}
 }

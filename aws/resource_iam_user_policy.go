@@ -22,41 +22,41 @@ import (
 const (
 	// Number of 30 indicates the character length of neccessary policy keyword
 	// such as "Version" and "Statement" and some JSON symbols ({}, []).
-	policyKeywordLength = 30
-	policyMaxLength     = 6144
+	userPolicyKeywordLength = 30
+	userPolicyMaxLength     = 6144
 )
 
 var (
-	_ resource.Resource              = &iamPolicyResource{}
-	_ resource.ResourceWithConfigure = &iamPolicyResource{}
+	_ resource.Resource              = &iamUserPolicyResource{}
+	_ resource.ResourceWithConfigure = &iamUserPolicyResource{}
 )
 
-func NewIamPolicyResource() resource.Resource {
-	return &iamPolicyResource{}
+func NewIamUserPolicyResource() resource.Resource {
+	return &iamUserPolicyResource{}
 }
 
-type iamPolicyResource struct {
+type iamUserPolicyResource struct {
 	client *awsIamClient.Client
 }
 
-type iamPolicyResourceModel struct {
+type iamUserPolicyResourceModel struct {
 	UserName               types.String    `tfsdk:"user_name"`
 	AttachedPolicies       types.List      `tfsdk:"attached_policies"`
-	AttachedPoliciesDetail []*policyDetail `tfsdk:"attached_policies_detail"`
-	CombinedPolicesDetail  []*policyDetail `tfsdk:"combined_policies_detail"`
-	Policies               []*policyDetail `tfsdk:"policies"` // TODO: remove when 'Policies' is no longer used.
+	AttachedPoliciesDetail []*userPolicyDetail `tfsdk:"attached_policies_detail"`
+	CombinedPolicesDetail  []*userPolicyDetail `tfsdk:"combined_policies_detail"`
+	Policies               []*userPolicyDetail `tfsdk:"policies"` // TODO: remove when 'Policies' is no longer used.
 }
 
-type policyDetail struct {
+type userPolicyDetail struct {
 	PolicyName     types.String `tfsdk:"policy_name"`
 	PolicyDocument types.String `tfsdk:"policy_document"`
 }
 
-func (r *iamPolicyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_iam_policy"
+func (r *iamUserPolicyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_iam_user_policy"
 }
 
-func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *iamUserPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Provides a IAM Policy resource that manages policy content " +
 			"exceeding character limits by splitting it into smaller segments. " +
@@ -127,20 +127,15 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 	}
 }
 
-func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	resp.Diagnostics.AddWarning(
-		"⚠️ Deprecated Resource",
-		"The resource `st-aws_iam_policy` is deprecated, moved to `st-aws_iam_user_policy`.",
-	)
-
+func (r *iamUserPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
 	r.client = req.ProviderData.(awsClients).iamClient
 }
 
-func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan *iamPolicyResourceModel
+func (r *iamUserPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan *iamUserPolicyResourceModel
 	getPlanDiags := req.Config.Get(ctx, &plan)
 	resp.Diagnostics.Append(getPlanDiags...)
 	if resp.Diagnostics.HasError() {
@@ -159,7 +154,7 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	state := &iamPolicyResourceModel{}
+	state := &iamUserPolicyResourceModel{}
 	state.UserName = plan.UserName
 	state.AttachedPolicies = plan.AttachedPolicies
 	state.AttachedPoliciesDetail = attachedPolicies
@@ -204,8 +199,8 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 	}
 }
 
-func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state *iamPolicyResourceModel
+func (r *iamUserPolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state *iamUserPolicyResourceModel
 	getStateDiags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(getStateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -220,7 +215,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	// This state will be using to compare with the current state.
-	var oriState *iamPolicyResourceModel
+	var oriState *iamUserPolicyResourceModel
 	getOriStateDiags := req.State.Get(ctx, &oriState)
 	resp.Diagnostics.Append(getOriStateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -299,8 +294,8 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 }
 
-func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state *iamPolicyResourceModel
+func (r *iamUserPolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state *iamUserPolicyResourceModel
 	getPlanDiags := req.Config.Get(ctx, &plan)
 	resp.Diagnostics.Append(getPlanDiags...)
 	if resp.Diagnostics.HasError() {
@@ -414,8 +409,8 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 }
 
-func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state *iamPolicyResourceModel
+func (r *iamUserPolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state *iamUserPolicyResourceModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -442,8 +437,8 @@ func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 }
 
-func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	policyDetailsState := []*policyDetail{}
+func (r *iamUserPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	policyDetailsState := []*userPolicyDetail{}
 	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
 	policyNames := strings.Split(req.ID, ",")
 	var username string
@@ -481,11 +476,11 @@ func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.Import
 					)
 				}
 
-				policyDetail := policyDetail{
+				userPolicyDetail := userPolicyDetail{
 					PolicyName:     types.StringValue(policyName),
 					PolicyDocument: types.StringValue(policyDocument),
 				}
-				policyDetailsState = append(policyDetailsState, &policyDetail)
+				policyDetailsState = append(policyDetailsState, &userPolicyDetail)
 			}
 
 			if getPolicyEntities.PolicyUsers != nil {
@@ -504,9 +499,9 @@ func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.Import
 		return
 	}
 
-	var policyList []policyDetail
+	var policyList []userPolicyDetail
 	for _, policy := range policyDetailsState {
-		policies := policyDetail{
+		policies := userPolicyDetail{
 			PolicyName:     types.StringValue(policy.PolicyName.ValueString()),
 			PolicyDocument: types.StringValue(policy.PolicyDocument.ValueString()),
 		}
@@ -538,7 +533,7 @@ func (r *iamPolicyResource) ImportState(ctx context.Context, req resource.Import
 //   - combinedPoliciesDetail: The combined policies detail to be recorded in state file.
 //   - attachedPoliciesDetail: The attached policies detail to be recorded in state file.
 //   - errList: List of errors, return nil if no errors.
-func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyResourceModel) (combinedPoliciesDetail []*policyDetail, attachedPoliciesDetail []*policyDetail, errList []error) {
+func (r *iamUserPolicyResource) createPolicy(ctx context.Context, plan *iamUserPolicyResourceModel) (combinedPoliciesDetail []*userPolicyDetail, attachedPoliciesDetail []*userPolicyDetail, errList []error) {
 	var policies []string
 	plan.AttachedPolicies.ElementsAs(ctx, &policies, false)
 	combinedPolicyDocuments, excludedPolicies, attachedPoliciesDetail, errList := r.combinePolicyDocument(ctx, policies)
@@ -574,7 +569,7 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 	for i, policies := range combinedPolicyDocuments {
 		policyName := fmt.Sprintf("%s-%d", plan.UserName.ValueString(), i+1)
 
-		combinedPoliciesDetail = append(combinedPoliciesDetail, &policyDetail{
+		combinedPoliciesDetail = append(combinedPoliciesDetail, &userPolicyDetail{
 			PolicyName:     types.StringValue(policyName),
 			PolicyDocument: types.StringValue(policies),
 		})
@@ -599,7 +594,7 @@ func (r *iamPolicyResource) createPolicy(ctx context.Context, plan *iamPolicyRes
 //   - excludedPolicies: If the target policy exceeds maximum length, then do not combine the policy and return as excludedPolicies.
 //   - attachedPoliciesDetail: The attached policies detail to be recorded in state file.
 //   - errList: List of errors, return nil if no errors.
-func (r *iamPolicyResource) combinePolicyDocument(ctx context.Context, attachedPolicies []string) (combinedPolicyDocument []string, excludedPolicies []*policyDetail, attachedPoliciesDetail []*policyDetail, errList []error) {
+func (r *iamUserPolicyResource) combinePolicyDocument(ctx context.Context, attachedPolicies []string) (combinedPolicyDocument []string, excludedPolicies []*userPolicyDetail, attachedPoliciesDetail []*userPolicyDetail, errList []error) {
 	attachedPoliciesDetail, notExistErrList, unexpectedErrList := r.fetchPolicies(ctx, attachedPolicies)
 
 	errList = append(errList, notExistErrList...)
@@ -624,7 +619,7 @@ func (r *iamPolicyResource) combinePolicyDocument(ctx context.Context, attachedP
 		// limitation of "maximum number of attached policies" easily.
 		noWhitespace := strings.Join(strings.Fields(tempPolicyDocument), "") //removes any whitespace including \t and \n
 		if len(noWhitespace) > policyMaxLength {
-			excludedPolicies = append(excludedPolicies, &policyDetail{
+			excludedPolicies = append(excludedPolicies, &userPolicyDetail{
 				PolicyName:     attachedPolicy.PolicyName,
 				PolicyDocument: types.StringValue(tempPolicyDocument),
 			})
@@ -647,10 +642,10 @@ func (r *iamPolicyResource) combinePolicyDocument(ctx context.Context, attachedP
 		currentLength += len(finalStatement)
 
 		// Before further proceeding the current policy, we need to add a number
-		// of 'policyKeywordLength' to simulate the total length of completed
+		// of 'userPolicyKeywordLength' to simulate the total length of completed
 		// policy to check whether it is already execeeded the max character
 		// length of 6144.
-		if (currentLength + policyKeywordLength) > policyMaxLength {
+		if (currentLength + userPolicyKeywordLength) > userPolicyMaxLength {
 			currentPolicyDocument = strings.TrimSuffix(currentPolicyDocument, ",")
 			appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
 			currentPolicyDocument = finalStatement + ","
@@ -680,7 +675,7 @@ func (r *iamPolicyResource) combinePolicyDocument(ctx context.Context, attachedP
 // Returns:
 //   - notExistError: List of allowed not exist errors to be used as warning messages instead, return nil if no errors.
 //   - unexpectedError: List of unexpected errors to be used as normal error messages, return nil if no errors.
-func (r *iamPolicyResource) readCombinedPolicy(ctx context.Context, state *iamPolicyResourceModel) (notExistErrs, unexpectedErrs []error) {
+func (r *iamUserPolicyResource) readCombinedPolicy(ctx context.Context, state *iamUserPolicyResourceModel) (notExistErrs, unexpectedErrs []error) {
 	var policiesName []string
 	for _, policy := range state.CombinedPolicesDetail {
 		policiesName = append(policiesName, policy.PolicyName.ValueString())
@@ -711,7 +706,7 @@ func (r *iamPolicyResource) readCombinedPolicy(ctx context.Context, state *iamPo
 // Returns:
 //   - notExistError: List of allowed not exist errors to be used as warning messages instead, return nil if no errors.
 //   - unexpectedError: List of unexpected errors to be used as normal error messages, return nil if no errors.
-func (r *iamPolicyResource) readAttachedPolicy(ctx context.Context, state *iamPolicyResourceModel) (notExistErrs, unexpectedErrs []error) {
+func (r *iamUserPolicyResource) readAttachedPolicy(ctx context.Context, state *iamUserPolicyResourceModel) (notExistErrs, unexpectedErrs []error) {
 	var policiesName []string
 	for _, policyName := range state.AttachedPolicies.Elements() {
 		policiesName = append(policiesName, strings.Trim(policyName.String(), "\""))
@@ -744,7 +739,7 @@ func (r *iamPolicyResource) readAttachedPolicy(ctx context.Context, state *iamPo
 //   - policiesDetail: List of retrieved policies detail.
 //   - notExistError: List of allowed not exist errors to be used as warning messages instead, return empty list if no errors.
 //   - unexpectedError: List of unexpected errors to be used as normal error messages, return empty list if no errors.
-func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []string) (policiesDetail []*policyDetail, notExistError, unexpectedError []error) {
+func (r *iamUserPolicyResource) fetchPolicies(ctx context.Context, policiesName []string) (policiesDetail []*userPolicyDetail, notExistError, unexpectedError []error) {
 	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
 	getPolicyNameResponse := &awsIamClient.GetPolicyOutput{}
 	var ae smithy.APIError
@@ -797,7 +792,7 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 				unexpectedError = append(unexpectedError, err)
 			}
 		} else {
-			policiesDetail = append(policiesDetail, &policyDetail{
+			policiesDetail = append(policiesDetail, &userPolicyDetail{
 				PolicyName:     types.StringValue(*getPolicyNameResponse.Policy.PolicyName),
 				PolicyDocument: types.StringValue(*getPolicyDocumentResponse.PolicyVersion.Document),
 			})
@@ -817,7 +812,7 @@ func (r *iamPolicyResource) fetchPolicies(ctx context.Context, policiesName []st
 //
 // Returns:
 //   - error: The policy drifting error.
-func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyResourceModel) error {
+func (r *iamUserPolicyResource) checkPoliciesDrift(newState, oriState *iamUserPolicyResourceModel) error {
 	var driftedPolicies []string
 
 	for _, oldPolicyDetailState := range oriState.AttachedPoliciesDetail {
@@ -848,7 +843,7 @@ func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyReso
 //
 // Parameters:
 //   - state: The recorded state configurations.
-func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
+func (r *iamUserPolicyResource) removePolicy(ctx context.Context, state *iamUserPolicyResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
 	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
 
@@ -946,7 +941,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 //
 // Returns:
 //   - err: Error.
-func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
+func (r *iamUserPolicyResource) attachPolicyToUser(ctx context.Context, state *iamUserPolicyResourceModel) (unexpectedError []error) {
 	attachPolicyToUser := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
 			policyArn, _, err := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
@@ -977,7 +972,7 @@ func (r *iamPolicyResource) attachPolicyToUser(ctx context.Context, state *iamPo
 	return unexpectedError
 }
 
-func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string, err error) {
+func (r *iamUserPolicyResource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string, err error) {
 	var listPoliciesResponse *awsIamClient.ListPoliciesOutput
 
 	listPolicies := func() error {
