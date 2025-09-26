@@ -173,7 +173,7 @@ func (r *iamPermissionSetPolicyResource) Create(ctx context.Context, req resourc
 		CombinedPolicesDetail:  combined,
 		InstanceArn:            plan.InstanceArn,
 		PermissionSetArn:       plan.PermissionSetArn,
-		PolicyPath:             plan.PolicyPath, // will be "/" by default if using stringdefault
+		PolicyPath:             plan.PolicyPath,
 	}
 
 	nf, errs := r.readCombinedPolicy(ctx, state)
@@ -220,7 +220,6 @@ func (r *iamPermissionSetPolicyResource) Read(ctx context.Context, req resource.
 		state.PolicyPath = types.StringValue("/")
 	}
 
-	// This state will be using to compare with the current state.
 	var oriState *iamPermissionSetPolicyResourceModel
 	getOriStateDiags := req.State.Get(ctx, &oriState)
 	resp.Diagnostics.Append(getOriStateDiags...)
@@ -305,14 +304,12 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 		plan.PolicyPath = types.StringValue("/")
 	}
 
-	// Validate/guard SSO client before detach/attach/provision
 	if r.sso == nil {
 		resp.Diagnostics.AddError("SSO Admin client not initialized",
 			"The SSO Admin client is nil. Ensure the provider constructs ssoadmin.Client and sets it in ProviderData.")
 		return
 	}
 
-	// 1) Refresh attached policies exist (your existing check)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, plan)
 	addDiagnostics(&resp.Diagnostics, "error",
 		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", state.PolicyName),
@@ -326,7 +323,6 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 		return
 	}
 
-	// 2) Detach from Permission Set (idempotent) + provision
 	detachErrs := r.detachCustomerPoliciesFromPermissionSet(ctx, state)
 	addDiagnostics(&resp.Diagnostics, "error",
 		"[API ERROR] Failed to detach customer-managed policies from Permission Set.",
@@ -342,7 +338,6 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 		return
 	}
 
-	// 3) Remove old IAM policies
 	removePolicyErr := r.removePolicy(ctx, state)
 	addDiagnostics(&resp.Diagnostics, "error",
 		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.PolicyName),
@@ -357,7 +352,6 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 		return
 	}
 
-	// 4) Create new combined IAM policies
 	combinedPolicies, attachedPolicies, errs := r.createPolicy(ctx, plan)
 	addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Create the Policy.", errs, "")
 	if resp.Diagnostics.HasError() {
@@ -368,9 +362,8 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 	state.AttachedPolicies = plan.AttachedPolicies
 	state.AttachedPoliciesDetail = attachedPolicies
 	state.CombinedPolicesDetail = combinedPolicies
-	state.PolicyPath = plan.PolicyPath // persist default if needed
+	state.PolicyPath = plan.PolicyPath
 
-	// 5) Read back combined (your behavior)
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
 	addDiagnostics(&resp.Diagnostics, "error",
 		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", state.PolicyName),
@@ -382,7 +375,6 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 		return
 	}
 
-	// 6) Reattach to Permission Set + provision
 	attachErrs := r.attachCustomerPoliciesToPermissionSet(ctx, state)
 	addDiagnostics(&resp.Diagnostics, "error",
 		"[API ERROR] Failed to attach customer-managed policies to Permission Set.",
@@ -398,7 +390,6 @@ func (r *iamPermissionSetPolicyResource) Update(ctx context.Context, req resourc
 		return
 	}
 
-	// 7) Save state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -409,12 +400,10 @@ func (r *iamPermissionSetPolicyResource) Delete(ctx context.Context, req resourc
 		return
 	}
 
-	// Default policy path in memory for detach
 	if state.PolicyPath.IsNull() || state.PolicyPath.IsUnknown() || state.PolicyPath.ValueString() == "" {
 		state.PolicyPath = types.StringValue("/")
 	}
 
-	// Detach from Permission Set (best effort) + provision
 	if r.sso != nil &&
 		!state.InstanceArn.IsNull() && !state.InstanceArn.IsUnknown() &&
 		!state.PermissionSetArn.IsNull() && !state.PermissionSetArn.IsUnknown() {
@@ -435,7 +424,6 @@ func (r *iamPermissionSetPolicyResource) Delete(ctx context.Context, req resourc
 		}
 	}
 
-	// Remove IAM policies
 	removePolicyUnexpectedErr := r.removePolicy(ctx, state)
 	addDiagnostics(&resp.Diagnostics, "error",
 		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.PolicyName),
@@ -452,7 +440,6 @@ func (r *iamPermissionSetPolicyResource) ImportState(ctx context.Context, req re
 		for _, policyName := range policyNames {
 			policyName = strings.ReplaceAll(policyName, " ", "")
 
-			// Retrieves the policy document for the policy
 			policyArn, policyVersionId, _ := r.getPolicyArn(ctx, policyName)
 
 			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, &awsIamClient.GetPolicyVersionInput{
@@ -951,7 +938,6 @@ func (r *iamPermissionSetPolicyResource) attachCustomerPoliciesToPermissionSet(c
 		return []error{fmt.Errorf("instance_arn and permission_set_arn are required")}
 	}
 	if len(state.CombinedPolicesDetail) == 0 {
-		// nothing to attach; treat as success
 		return nil
 	}
 
@@ -978,43 +964,113 @@ func (r *iamPermissionSetPolicyResource) attachCustomerPoliciesToPermissionSet(c
 				continue
 			}
 
-			// Classify the error
 			if errors.As(err, &ae) {
 				switch ae.ErrorCode() {
 				case "ConflictException":
-					// Already attached → idempotent success; continue.
 					continue
 				case "ThrottlingException", "TooManyRequestsException", "ServiceQuotaExceededException":
-					// Retryable → bubble up to backoff
 					return err
 				case "AccessDeniedException", "ValidationException", "ResourceNotFoundException":
-					// Non-retryable but continue with others; record it.
 					unexpectedError = append(unexpectedError, handleAPIError(err))
 					continue
 				default:
-					// Unknown; let backoff retry once (could be transient)
 					return handleAPIError(err)
 				}
 			}
 
-			// Non-API error (network ctx cancel, etc.). Let backoff retry.
 			return handleAPIError(err)
 		}
 
-		// Do not return aggregated unexpectedError here; we only use return to trigger backoff retries.
 		return nil
 	}
 
 	back := backoff.NewExponentialBackOff()
 	back.MaxElapsedTime = 30 * time.Second
 	if err := backoff.Retry(attachFn, back); err != nil {
-		// final retry failed → include it
 		unexpectedError = append(unexpectedError, err)
 	}
 
 	return unexpectedError
 }
 
+func (r *iamPermissionSetPolicyResource) detachCustomerPoliciesFromPermissionSet(ctx context.Context, state *iamPermissionSetPolicyResourceModel) (unexpectedError []error) {
+
+	if r.sso == nil {
+		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
+	}
+	if state.InstanceArn.IsNull() || state.InstanceArn.IsUnknown() ||
+		state.PermissionSetArn.IsNull() || state.PermissionSetArn.IsUnknown() {
+		return []error{fmt.Errorf("instance_arn and permission_set_arn are required to detach policies")}
+	}
+
+	want := map[string]struct{}{}
+	for _, cp := range state.CombinedPolicesDetail {
+		want[cp.PolicyName.ValueString()] = struct{}{}
+	}
+
+	listAndDetach := func() error {
+		path := state.PolicyPath.ValueString()
+		if path == "" {
+			path = "/"
+		}
+
+		var ae smithy.APIError
+		out, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
+			&awsSsoAdminClient.ListCustomerManagedPolicyReferencesInPermissionSetInput{
+				InstanceArn:      aws.String(state.InstanceArn.ValueString()),
+				PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
+			})
+		if err != nil {
+			if errors.As(err, &ae) && (ae.ErrorCode() == "ThrottlingException" || ae.ErrorCode() == "TooManyRequestsException") {
+				return err
+			}
+			return handleAPIError(err)
+		}
+
+		for _, ref := range out.CustomerManagedPolicyReferences {
+			if ref.Name == nil {
+				continue
+			}
+			name := *ref.Name
+			if _, ok := want[name]; !ok {
+				continue
+			}
+			_, err := r.sso.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx,
+				&awsSsoAdminClient.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
+					InstanceArn:      aws.String(state.InstanceArn.ValueString()),
+					PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
+					CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
+						Name: aws.String(name),
+						Path: aws.String(path),
+					},
+				})
+			if err != nil {
+				if errors.As(err, &ae) {
+					switch ae.ErrorCode() {
+					case "ResourceNotFoundException", "ConflictException":
+						continue
+					case "ThrottlingException", "TooManyRequestsException":
+						return err
+					}
+				}
+				unexpectedError = append(unexpectedError, handleAPIError(err))
+				continue
+			}
+		}
+		return nil
+	}
+
+	back := backoff.NewExponentialBackOff()
+	back.MaxElapsedTime = 30 * time.Second
+	if err := backoff.Retry(listAndDetach, back); err != nil {
+		unexpectedError = append(unexpectedError, err)
+	}
+	return unexpectedError
+}
+
+// `provisionPermissionSetAll` refreshes the given Permission Set across all
+// already-provisioned accounts in the Identity Center instance, retrying the
+// submission on transient errors with exponential backoff.
 func (r *iamPermissionSetPolicyResource) provisionPermissionSetAll(ctx context.Context, state *iamPermissionSetPolicyResourceModel) (unexpectedError []error) {
 	if r.sso == nil {
 		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
@@ -1033,89 +1089,6 @@ func (r *iamPermissionSetPolicyResource) provisionPermissionSetAll(ctx context.C
 	back := backoff.NewExponentialBackOff()
 	back.MaxElapsedTime = 30 * time.Second
 	if err := backoff.Retry(prov, back); err != nil {
-		unexpectedError = append(unexpectedError, err)
-	}
-	return unexpectedError
-}
-
-func (r *iamPermissionSetPolicyResource) detachCustomerPoliciesFromPermissionSet(
-	ctx context.Context,
-	state *iamPermissionSetPolicyResourceModel,
-) (unexpectedError []error) {
-
-	if r.sso == nil {
-		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
-	}
-	if state.InstanceArn.IsNull() || state.InstanceArn.IsUnknown() ||
-		state.PermissionSetArn.IsNull() || state.PermissionSetArn.IsUnknown() {
-		return []error{fmt.Errorf("instance_arn and permission_set_arn are required to detach policies")}
-	}
-
-	// Build a quick set of names we created (policy_name-1, policy_name-2, ...)
-	want := map[string]struct{}{}
-	for _, cp := range state.CombinedPolicesDetail {
-		want[cp.PolicyName.ValueString()] = struct{}{}
-	}
-
-	listAndDetach := func() error {
-		path := state.PolicyPath.ValueString()
-		if path == "" {
-			path = "/"
-		}
-
-		// List current customer-managed refs on the permission set
-		var ae smithy.APIError
-		out, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
-			&awsSsoAdminClient.ListCustomerManagedPolicyReferencesInPermissionSetInput{
-				InstanceArn:      aws.String(state.InstanceArn.ValueString()),
-				PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
-			})
-		if err != nil {
-			if errors.As(err, &ae) && (ae.ErrorCode() == "ThrottlingException" || ae.ErrorCode() == "TooManyRequestsException") {
-				return err // retry
-			}
-			return handleAPIError(err)
-		}
-
-		for _, ref := range out.CustomerManagedPolicyReferences {
-			if ref.Name == nil {
-				continue
-			}
-			name := *ref.Name
-			// only detach what we attached
-			if _, ok := want[name]; !ok {
-				continue
-			}
-			_, err := r.sso.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx,
-				&awsSsoAdminClient.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
-					InstanceArn:      aws.String(state.InstanceArn.ValueString()),
-					PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
-					CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
-						Name: aws.String(name),
-						Path: aws.String(path),
-					},
-				})
-			if err != nil {
-				if errors.As(err, &ae) {
-					switch ae.ErrorCode() {
-					case "ResourceNotFoundException", "ConflictException":
-						// already detached / transient attach change; treat as idempotent
-						continue
-					case "ThrottlingException", "TooManyRequestsException":
-						return err // retry
-					}
-				}
-				// keep going for others, but record error
-				unexpectedError = append(unexpectedError, handleAPIError(err))
-				continue
-			}
-		}
-		return nil
-	}
-
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(listAndDetach, back); err != nil {
 		unexpectedError = append(unexpectedError, err)
 	}
 	return unexpectedError
