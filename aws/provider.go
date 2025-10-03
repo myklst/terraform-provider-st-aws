@@ -244,8 +244,6 @@ func (p *awsServicesProvider) Resources(_ context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewRoute53Resource,
 		NewIamPolicyResource,
-		NewIamRolePolicyResource,
-		NewIamUserPolicyResource,
-		NewIamPermissionSetPolicyResource,
+		NewIamPolicyV2Resource,
 	}
 }
