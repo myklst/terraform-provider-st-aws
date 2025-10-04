@@ -881,7 +881,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				// Ignore error where the policy is not attached
 				// to the user as it is intented to detach the
 				// policy from user.
-				if !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
+				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 					return handleAPIError(err)
 				}
 			}
@@ -930,7 +930,6 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 
-			// 4) Delete the policy itself (idempotent).
 			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
 				// Ignore error where the policy had been deleted
 				// as it is intended to delete the IAM policy.
@@ -944,7 +943,8 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(removePolicy, reconnectBackoff); err != nil {
+	err := backoff.Retry(removePolicy, reconnectBackoff)
+	if err != nil {
 		return append(unexpectedError, err)
 	}
 	return nil
