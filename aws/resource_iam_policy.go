@@ -849,84 +849,102 @@ func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyReso
 //
 // Parameters:
 //   - state: The recorded state configurations.
+//
+// removePolicy will detach and delete the combined policies from user.
+//
+// Parameters:
+//   - state: The recorded state configurations.
 func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
+	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
 
-	remove := func() error {
-		for _, combined := range state.CombinedPolicesDetail {
-			policyArn, _, err := r.getPolicyArn(ctx, combined.PolicyName.ValueString())
+	removePolicy := func() error {
+		for _, combinedPolicy := range state.CombinedPolicesDetail {
+			policyArn, _, err := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
 			if err != nil {
 				unexpectedError = append(unexpectedError, err)
 				continue
 			}
 
-			if _, err = r.client.DetachUserPolicy(ctx, &awsIamClient.DetachUserPolicyInput{
-				PolicyArn: &policyArn,
+			detachPolicyFromUserRequest := &awsIamClient.DetachUserPolicyInput{
+				PolicyArn: aws.String(policyArn),
 				UserName:  aws.String(state.UserName.ValueString()),
-			}); err != nil && !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
-				return handleAPIError(err)
+			}
+			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
+				PolicyArn: aws.String(policyArn),
+			}
+			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
+				PolicyArn: aws.String(policyArn),
 			}
 
+			if _, err = r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
+				// Ignore error where the policy is not attached
+				// to the user as it is intented to detach the
+				// policy from user.
+				if !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
+					return handleAPIError(err)
+				}
+			}
+
+			// Differentiate AWS-managed policies vs customer-managed policies.
 			a, err := arn.Parse(policyArn)
 			if err != nil {
 				continue
 			}
 
-			// Skip deletion for AWS-managed IAM policies.
+			// Skip AWS-managed policies: arn:aws:iam::aws:policy/xxx.
 			if a.Service == "iam" && a.AccountID == "aws" {
 				continue
 			}
 
-			if a.Service != "iam" || len(a.AccountID) != 12 {
-				continue
-			}
-			isAllDigits := true
-			for _, ch := range a.AccountID {
-				if ch < '0' || ch > '9' {
-					isAllDigits = false
-					break
+			// An IAM policy versions must be removed before deleting
+			// the policy. Refer to the below offcial IAM documents:
+			// https://docs.aws.amazon.com/IAM/latest/APIReference/API_DeletePolicy.html
+			if listPolicyVersionsResponse, err = r.client.ListPolicyVersions(ctx, listPolicyVersionsRequest); err != nil {
+				if errors.As(err, &ae) {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if ae.ErrorCode() != "NoSuchEntity" {
+						return handleAPIError(err)
+					}
 				}
 			}
-			if !isAllDigits {
-				continue
-			}
+			for _, policyVersion := range listPolicyVersionsResponse.Versions {
+				// Default version could not be deleted.
+				if policyVersion.IsDefaultVersion {
+					continue
+				}
+				deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
+					PolicyArn: aws.String(policyArn),
+					VersionId: aws.String(*policyVersion.VersionId),
+				}
 
-			p := awsIamClient.NewListPolicyVersionsPaginator(r.client, &awsIamClient.ListPolicyVersionsInput{
-				PolicyArn: &policyArn,
-			})
-			for p.HasMorePages() {
-				out, err := p.NextPage(ctx)
-				if err != nil {
-					if errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity" {
-						break
-					}
-					return handleAPIError(err)
-				}
-				for _, v := range out.Versions {
-					if v.IsDefaultVersion {
-						continue
-					}
-					if _, err = r.client.DeletePolicyVersion(ctx, &awsIamClient.DeletePolicyVersionInput{
-						PolicyArn: &policyArn,
-						VersionId: v.VersionId,
-					}); err != nil && !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
+				if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 						return handleAPIError(err)
 					}
 				}
 			}
 
-			if _, err = r.client.DeletePolicy(ctx, &awsIamClient.DeletePolicyInput{
-				PolicyArn: &policyArn,
-			}); err != nil && !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
-				return handleAPIError(err)
+			// 4) Delete the policy itself (idempotent).
+			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
+				// Ignore error where the policy had been deleted
+				// as it is intended to delete the IAM policy.
+				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
+					return handleAPIError(err)
+				}
 			}
 		}
 		return nil
 	}
 
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(remove, back); err != nil {
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	if err := backoff.Retry(removePolicy, reconnectBackoff); err != nil {
 		return append(unexpectedError, err)
 	}
 	return nil
