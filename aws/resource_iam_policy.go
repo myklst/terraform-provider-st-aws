@@ -886,14 +886,18 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 
-			// Differentiate AWS-managed policies vs customer-managed policies.
+			// To differentiate AWS managed policies vs customer managed policies.
 			a, err := arn.Parse(policyArn)
 			if err != nil {
 				continue
 			}
 
-			// Skip AWS-managed policies: arn:aws:iam::aws:policy/xxx.
-			if a.Service == "iam" && a.AccountID == "aws" {
+			// The arn difference between AWS managed policy and customer managed policies:
+			// AWS managed policy: arn:aws:iam::*aws*:policy/XxxxXxxxx
+			// Customer managed policy: arn:aws:iam::*xxxxxxxxxxxx*:policy/xxxx-xxx-xxxx-xxxx-xxx-xx
+			// See http://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html for more information.
+			// To differentiate is the ** part, the part is AccountID field.
+			if a.AccountID == "aws" {
 				continue
 			}
 
@@ -910,6 +914,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 					}
 				}
 			}
+
 			for _, policyVersion := range listPolicyVersionsResponse.Versions {
 				// Default version could not be deleted.
 				if policyVersion.IsDefaultVersion {
@@ -938,6 +943,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 		}
+
 		return nil
 	}
 
@@ -947,6 +953,7 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	if err != nil {
 		return append(unexpectedError, err)
 	}
+
 	return nil
 }
 
