@@ -3,9 +3,9 @@
 ####################################
 resource "st-aws_iam_policy_v2" "permission_set" {
   permission_set {
-    policy_name        = "example-policy"
-    instance_arn       = "ssoins-xxxxxxxxxxxxxx"
-    permission_set_arn = "arn:aws:sso:::permissionSet/ssoins-xxxxxxxxxxxxxx/ps-xxxxxxxxxxxxx"
+    permission_set_name = "example-policy"
+    instance_arn        = "ssoins-xxxxxxxxxxxxxx"
+    permission_set_arn  = "arn:aws:sso:::permissionSet/ssoins-xxxxxxxxxxxxxx/ps-xxxxxxxxxxxxx"
   }
 
   attached_policies = [

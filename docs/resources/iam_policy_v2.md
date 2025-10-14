@@ -18,9 +18,9 @@ Provides an IAM Policy resource that manages policy content exceeding character 
 ####################################
 resource "st-aws_iam_policy_v2" "permission_set" {
   permission_set {
-    policy_name        = "example-policy"
-    instance_arn       = "ssoins-xxxxxxxxxxxxxx"
-    permission_set_arn = "arn:aws:sso:::permissionSet/ssoins-xxxxxxxxxxxxxx/ps-xxxxxxxxxxxxx"
+    permission_set_name = "example-policy"
+    instance_arn        = "ssoins-xxxxxxxxxxxxxx"
+    permission_set_arn  = "arn:aws:sso:::permissionSet/ssoins-xxxxxxxxxxxxxx/ps-xxxxxxxxxxxxx"
   }
 
   attached_policies = [
@@ -74,9 +74,9 @@ resource "st-aws_iam_policy_v2" "User" {
 
 ### Optional
 
-- `permission_set` (Block, Optional) Attach to an Identity Center Permission Set. (see [below for nested schema](#nestedblock--permission_set))
-- `role` (Block, Optional) Attach to an IAM Role. (see [below for nested schema](#nestedblock--role))
-- `user` (Block, Optional) Attach to an IAM User. (see [below for nested schema](#nestedblock--user))
+- `permission_set` (Block, Optional) Attach to an Identity Center Permission Set. Mutually exclusive with `role` and `user`. (see [below for nested schema](#nestedblock--permission_set))
+- `role` (Block, Optional) Attach to an IAM Role. Mutually exclusive with `user` and `permission_set`. (see [below for nested schema](#nestedblock--role))
+- `user` (Block, Optional) Attach to an IAM User. Mutually exclusive with `role` and `permission_set`. (see [below for nested schema](#nestedblock--user))
 
 ### Read-Only
 
@@ -90,7 +90,7 @@ Optional:
 
 - `instance_arn` (String) Identity Center Instance ARN.
 - `permission_set_arn` (String) Target Permission Set ARN.
-- `policy_name` (String) Logical name for the combined policy attached to the Permission Set.
+- `permission_set_name` (String) Logical name for the combined policy attached to the Permission Set.
 - `policy_path` (String) Policy path for customer-managed policy references.
 
 
