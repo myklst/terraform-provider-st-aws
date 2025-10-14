@@ -870,12 +870,6 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				PolicyArn: aws.String(policyArn),
 				UserName:  aws.String(state.UserName.ValueString()),
 			}
-			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
-				PolicyArn: aws.String(policyArn),
-			}
-			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
-				PolicyArn: aws.String(policyArn),
-			}
 
 			if _, err = r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
 				// Ignore error where the policy is not attached
@@ -899,6 +893,10 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 			// To differentiate is the ** part, the part is AccountID field.
 			if a.AccountID == "aws" {
 				continue
+			}
+
+			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
+				PolicyArn: aws.String(policyArn),
 			}
 
 			// An IAM policy versions must be removed before deleting
@@ -935,6 +933,10 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 
+			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
+				PolicyArn: aws.String(policyArn),
+			}
+
 			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
 				// Ignore error where the policy had been deleted
 				// as it is intended to delete the IAM policy.
@@ -943,7 +945,6 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 		}
-
 		return nil
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/smithy-go"
 	"github.com/cenkalti/backoff"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -60,10 +61,10 @@ type userBlock struct {
 }
 
 type permissionSetBlock struct {
-	PolicyName       types.String `tfsdk:"policy_name"`
-	InstanceArn      types.String `tfsdk:"instance_arn"`
-	PermissionSetArn types.String `tfsdk:"permission_set_arn"`
-	PolicyPath       types.String `tfsdk:"policy_path"`
+	PermissionSetName types.String `tfsdk:"permission_set_name"`
+	InstanceArn       types.String `tfsdk:"instance_arn"`
+	PermissionSetArn  types.String `tfsdk:"permission_set_arn"`
+	PolicyPath        types.String `tfsdk:"policy_path"`
 }
 
 type policyV2Detail struct {
@@ -122,7 +123,7 @@ func (r *iamPolicyV2Resource) Schema(_ context.Context, _ resource.SchemaRequest
 		},
 		Blocks: map[string]schema.Block{
 			"role": schema.SingleNestedBlock{
-				Description: "Attach to an IAM Role.",
+				Description: "Attach to an IAM Role. Mutually exclusive with `user` and `permission_set`.",
 				Attributes: map[string]schema.Attribute{
 					"role_name": schema.StringAttribute{
 						Description: "Target IAM Role name.",
@@ -131,7 +132,7 @@ func (r *iamPolicyV2Resource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"user": schema.SingleNestedBlock{
-				Description: "Attach to an IAM User.",
+				Description: "Attach to an IAM User. Mutually exclusive with `role` and `permission_set`.",
 				Attributes: map[string]schema.Attribute{
 					"user_name": schema.StringAttribute{
 						Description: "Target IAM User name.",
@@ -140,9 +141,9 @@ func (r *iamPolicyV2Resource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"permission_set": schema.SingleNestedBlock{
-				Description: "Attach to an Identity Center Permission Set.",
+				Description: "Attach to an Identity Center Permission Set. Mutually exclusive with `role` and `user`.",
 				Attributes: map[string]schema.Attribute{
-					"policy_name": schema.StringAttribute{
+					"permission_set_name": schema.StringAttribute{
 						Description: "Logical name for the combined policy attached to the Permission Set.",
 						Optional:    true,
 					},
@@ -173,7 +174,13 @@ func (r *iamPolicyV2Resource) Configure(_ context.Context, req resource.Configur
 	r.sso = req.ProviderData.(awsClients).ssoAdminClient
 }
 
-func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+func (r *iamPolicyV2Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// If the entire plan is null, the resource is planned for destruction.
+	if req.Config.Raw.IsNull() {
+		fmt.Println("Plan is null; skipping ModifyPlan.")
+		return
+	}
+
 	var plan *iamPolicyV2ResourceModel
 	if diags := req.Config.Get(ctx, &plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
@@ -200,695 +207,478 @@ func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// Check if PermissionSet block is config. Set default path "/", require instance_arn & permission_set_arn, and ensure the SSO client is initialized.
-	// createPolicy and all switch-case paths depend on a normalized PermissionSet and an initialized SSO client.
+	// Check if PermissionSet block is config. Set default path "/".
 	if plan.PermissionSet != nil {
 		if plan.PermissionSet.PolicyPath.IsNull() || plan.PermissionSet.PolicyPath.IsUnknown() || plan.PermissionSet.PolicyPath.ValueString() == "" {
 			plan.PermissionSet.PolicyPath = types.StringValue("/") // The default policy path is "/".
 		}
-		if plan.PermissionSet.InstanceArn.IsUnknown() || plan.PermissionSet.InstanceArn.IsNull() ||
-			plan.PermissionSet.PermissionSetArn.IsUnknown() || plan.PermissionSet.PermissionSetArn.IsNull() {
-			resp.Diagnostics.AddError("Missing required Identity Center fields", "`permission_set.instance_arn` and `permission_set.permission_set_arn` are required.")
-			return
-		}
-		if r.sso == nil {
-			resp.Diagnostics.AddError("SSO Admin client not initialized", "The SSO Admin client is nil. Ensure the provider constructs ssoadmin.Client and sets it in ProviderData.")
-			return
-		}
+	}
+}
+
+func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan *iamPolicyV2ResourceModel
+	getPlanDiags := req.Config.Get(ctx, &plan)
+	resp.Diagnostics.Append(getPlanDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
-	combined, attached, createErrs := r.createPolicy(ctx, plan)
-	addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Create the Policy.", createErrs, "")
+	combinedPolicies, attachedPolicies, errors := r.createPolicy(ctx, plan)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		"[API ERROR] Failed to Create the Policy.",
+		errors,
+		"",
+	)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	state := &iamPolicyV2ResourceModel{
 		AttachedPolicies:       plan.AttachedPolicies,
-		AttachedPoliciesDetail: attached,
-		CombinedPolicesDetail:  combined,
+		AttachedPoliciesDetail: attachedPolicies,
+		CombinedPolicesDetail:  combinedPolicies,
 		Role:                   plan.Role,
 		User:                   plan.User,
 		PermissionSet:          plan.PermissionSet,
 	}
 
-	switch {
-	case plan.Role != nil:
-		if errs := r.attachPolicyToRole(ctx, state); len(errs) > 0 {
-			addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Attach Policy to Role.", errs, "")
-			return
-		}
-		nf, re := r.readCombinedPolicy(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", plan.Role.RoleName),
-			nf, "")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", plan.Role.RoleName),
-			re, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
+	policyType, policyName := policyTypeOf(plan)
 
-	case plan.User != nil:
-		if errs := r.attachPolicyToUser(ctx, state); len(errs) > 0 {
-			addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Attach Policy to User.", errs, "")
-			return
-		}
-		nf, re := r.readCombinedPolicy(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", plan.User.UserName),
-			nf, "")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", plan.User.UserName),
-			re, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-	case plan.PermissionSet != nil:
-		var createdCombined []*policyV2Detail
-		var excludedOriginals []*policyV2Detail
-		prefix := plan.PermissionSet.PolicyName.ValueString() + "-"
-		for _, d := range combined {
-			if strings.HasPrefix(d.PolicyName.ValueString(), prefix) {
-				createdCombined = append(createdCombined, d)
-			} else {
-				excludedOriginals = append(excludedOriginals, d)
-			}
-		}
-
-		var awsManagedArns []string
-		var excludedCustomerManaged []*policyV2Detail
-		var bucketErrs []error
-
-		isAWSManaged := func(s string) bool {
-			a, err := arn.Parse(s)
-			return err == nil && a.Service == "iam" && a.AccountID == "aws"
-		}
-		for _, e := range excludedOriginals {
-			arnStr, _, err := r.getPolicyArn(ctx, e.PolicyName.ValueString())
-			if err != nil {
-				bucketErrs = append(bucketErrs, err)
-				continue
-			}
-			if arnStr == "" {
-				bucketErrs = append(bucketErrs, fmt.Errorf("policy %q not found while bucketing", e.PolicyName.ValueString()))
-				continue
-			}
-			if isAWSManaged(arnStr) {
-				awsManagedArns = append(awsManagedArns, arnStr)
-			} else {
-				excludedCustomerManaged = append(excludedCustomerManaged, e)
-			}
-		}
-		addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to resolve excluded policy ownership.", bucketErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		state.CombinedPolicesDetail = append(createdCombined, excludedCustomerManaged...)
-
-		nf, re := r.readCombinedPolicy(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", state.PermissionSet.PolicyName),
-			nf, "")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", state.PermissionSet.PolicyName),
-			re, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		if errs := r.attachCustomerPoliciesToPermissionSet(ctx, state); len(errs) > 0 {
-			addDiagnostics(&resp.Diagnostics, "error",
-				"[API ERROR] Failed to attach customer-managed policies to Permission Set.",
-				errs, "")
-			return
-		}
-
-		if len(awsManagedArns) > 0 {
-			if mpErrs := r.attachAWSManagedPoliciesToPermissionSet(ctx, state, awsManagedArns); len(mpErrs) > 0 {
-				addDiagnostics(&resp.Diagnostics, "error",
-					"[API ERROR] Failed to attach AWS-managed policies to Permission Set.",
-					mpErrs, "")
-				return
-			}
-		}
-
-		if provErrs := r.provisionPermissionSetAll(ctx, state); len(provErrs) > 0 {
-			addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to provision Permission Set.", provErrs, "")
-			return
-		}
+	var attachErrs []error
+	switch policyType {
+	case "role":
+		attachErrs = r.attachPolicyToRole(ctx, state)
+	case "user":
+		attachErrs = r.attachPolicyToUser(ctx, state)
+	case "permissionSet":
+		attachErrs = r.attachPolicyToPermissionSet(ctx, state, 10*time.Minute)
+	default:
+		attachErrs = []error{fmt.Errorf("no valid target (role/user/permission_set) in plan")}
+	}
+	if len(attachErrs) > 0 {
+		addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Attach Policy to target.", attachErrs, "")
+		return
 	}
 
-	if diags := resp.State.Set(ctx, &state); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
+	// Read back combined policy once, add standard diags
+	nf, re := r.readCombinedPolicy(ctx, state)
+	addReadCombinedDiags(&resp.Diagnostics, policyName, nf, re)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	setStateDiags := resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 }
 
 func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state *iamPolicyV2ResourceModel
-	if diags := req.State.Get(ctx, &state); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
+	getStateDiags := req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(getStateDiags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if state.PermissionSet != nil {
-		if state.PermissionSet.PolicyPath.IsNull() || state.PermissionSet.PolicyPath.IsUnknown() || state.PermissionSet.PolicyPath.ValueString() == "" {
-			state.PermissionSet.PolicyPath = types.StringValue("/")
-		}
-	}
-
+	// This state will be using to compare with the current state.
 	var oriState *iamPolicyV2ResourceModel
-	if diags := req.State.Get(ctx, &oriState); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
+	getOriStateDiags := req.State.Get(ctx, &oriState)
+	resp.Diagnostics.Append(getOriStateDiags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	if oriState.PermissionSet != nil {
-		if oriState.PermissionSet.PolicyPath.IsNull() || oriState.PermissionSet.PolicyPath.IsUnknown() || oriState.PermissionSet.PolicyPath.ValueString() == "" {
-			oriState.PermissionSet.PolicyPath = types.StringValue("/")
-		}
-	}
 
-	subject := func() string {
-		switch {
-		case state.Role != nil:
-			return state.Role.RoleName.ValueString()
-		case state.User != nil:
-			return state.User.UserName.ValueString()
-		case state.PermissionSet != nil:
-			return state.PermissionSet.PolicyName.ValueString()
-		default:
-			return "(unknown-target)"
-		}
-	}()
+	_, policyName := policyTypeOf(state)
 
-	nfCombined, errCombined := r.readCombinedPolicy(ctx, state)
-	addDiagnostics(&resp.Diagnostics, "warning",
-		fmt.Sprintf("[API WARNING] Failed to Read Combined Policies for %v: Policy Not Found!", subject),
-		nfCombined, "The combined policies may be deleted due to human mistake or API error, will trigger update to recreate the combined policy:",
+	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"warning",
+		fmt.Sprintf("[API WARNING] Failed to Read Combined Policies for %v: Policy Not Found!", policyName),
+		readCombinedPolicyNotExistErr,
+		"The combined policies may be deleted due to human mistake or API error, will trigger update to recreate the combined policy:",
 	)
-	addDiagnostics(&resp.Diagnostics, "error",
-		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", subject),
-		errCombined, "",
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", policyName),
+		readCombinedPolicyErr,
+		"",
 	)
-	if diags := resp.State.Set(ctx, &state); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
-	}
+
+	// Set state so that Terraform will trigger update if there are changes in state.
+	setStateDiags := resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
 	if resp.Diagnostics.WarningsCount() > 0 || resp.Diagnostics.HasError() {
 		return
 	}
 
-	nfAttached, errAttached := r.readAttachedPolicy(ctx, state)
-	addDiagnostics(&resp.Diagnostics, "warning",
-		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", subject),
-		nfAttached, "The policy that will be used to combine policies had been removed on AWS, next apply with update will prompt error:",
+	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"warning",
+		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", policyName),
+		readAttachedPolicyNotExistErr,
+		"The policy that will be used to combine policies had been removed on AWS, next apply with update will prompt error:",
 	)
-	addDiagnostics(&resp.Diagnostics, "error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", subject),
-		errAttached, "",
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", policyName),
+		readAttachedPolicyErr,
+		"",
 	)
-	if diags := resp.State.Set(ctx, &state); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
-	}
+
+	// Set state so that Terraform will trigger update if there are changes in state.
+	setStateDiags = resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
 	if resp.Diagnostics.WarningsCount() > 0 || resp.Diagnostics.HasError() {
 		return
 	}
 
-	driftErr := r.checkPoliciesDrift(state, oriState)
-	addDiagnostics(&resp.Diagnostics, "warning",
-		fmt.Sprintf("[API WARNING] Policy Drift Detected for %v.", subject),
-		[]error{driftErr}, "This resource will be updated in the next terraform apply.",
+	compareAttachedPoliciesErr := r.checkPoliciesDrift(state, oriState)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"warning",
+		fmt.Sprintf("[API WARNING] Policy Drift Detected for %v.", policyName),
+		[]error{compareAttachedPoliciesErr},
+		"This resource will be updated in the next terraform apply.",
 	)
 
-	if diags := resp.State.Set(ctx, &state); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
+	setStateDiags = resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 }
 
 func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state *iamPolicyV2ResourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	getPlanDiags := req.Config.Get(ctx, &plan)
+	resp.Diagnostics.Append(getPlanDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	subjectsSet := 0
-	if plan.Role != nil {
-		subjectsSet++
-	}
-	if plan.User != nil {
-		subjectsSet++
-	}
-	if plan.PermissionSet != nil {
-		subjectsSet++
-	}
-
-	if subjectsSet != 1 {
-		resp.Diagnostics.AddError(
-			"Invalid target selection",
-			"Exactly one of `role`, `user`, or `permission_set` must be specified.",
-		)
+	getStateDiags := req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(getStateDiags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	isRole := plan.Role != nil && !plan.Role.RoleName.IsNull() && !plan.Role.RoleName.IsUnknown() && plan.Role.RoleName.ValueString() != ""
-	isUser := plan.User != nil && !plan.User.UserName.IsNull() && !plan.User.UserName.IsUnknown() && plan.User.UserName.ValueString() != ""
-	isPS := plan.PermissionSet != nil &&
-		!plan.PermissionSet.InstanceArn.IsNull() && !plan.PermissionSet.InstanceArn.IsUnknown() &&
-		!plan.PermissionSet.PermissionSetArn.IsNull() && !plan.PermissionSet.PermissionSetArn.IsUnknown()
-
-	if isPS {
-		if plan.PermissionSet.PolicyPath.IsNull() || plan.PermissionSet.PolicyPath.IsUnknown() || plan.PermissionSet.PolicyPath.ValueString() == "" {
-			plan.PermissionSet.PolicyPath = types.StringValue("/")
-		}
-		if r.sso == nil {
-			resp.Diagnostics.AddError(
-				"SSO Admin client not initialized",
-				"The SSO Admin client is nil. Ensure the provider constructs ssoadmin.Client and sets it in ProviderData.",
-			)
-			return
-		}
-	}
-
+	// readAttachedPolicy.
+	_, readPolicyName := policyTypeOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, plan)
-	switch {
-	case isRole:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", state.Role.RoleName),
-			readAttachedPolicyNotExistErr, "The policy that will be used to combine policies had been removed on AWS:")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", state.Role.RoleName),
-			readAttachedPolicyErr, "")
-	case isUser:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", state.User.UserName),
-			readAttachedPolicyNotExistErr, "The policy that will be used to combine policies had been removed on AWS:")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", state.User.UserName),
-			readAttachedPolicyErr, "")
-	case isPS:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", state.PermissionSet.PolicyName),
-			readAttachedPolicyNotExistErr, "The policy that will be used to combine policies had been removed on AWS:")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", state.PermissionSet.PolicyName),
-			readAttachedPolicyErr, "")
-	}
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readPolicyName),
+		readAttachedPolicyNotExistErr,
+		"The policy that will be used to combine policies had been removed on AWS:",
+	)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readPolicyName),
+		readAttachedPolicyErr,
+		"",
+	)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if isPS {
-		detachErrs := r.detachCustomerPoliciesFromPermissionSet(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			"[API ERROR] Failed to detach customer-managed policies from Permission Set.",
-			detachErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		preProvErrs := r.provisionPermissionSetAll(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			"[API ERROR] Failed to provision Permission Set after detach.",
-			preProvErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	}
-
+	// removePolicy.
 	removePolicyErr := r.removePolicy(ctx, state)
-	switch {
-	case isRole:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.Role.RoleName),
-			removePolicyErr, "")
-	case isUser:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.User.UserName),
-			removePolicyErr, "")
-	case isPS:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", state.PermissionSet.PolicyName),
-			removePolicyErr, "")
-	}
+	_, removePolicyName := policyTypeOf(state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", removePolicyName),
+		removePolicyErr,
+		"",
+	)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	state.CombinedPolicesDetail = nil
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	setStateDiags := resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	combinedPolicies, attachedPolicies, createErrs := r.createPolicy(ctx, plan)
-	addDiagnostics(&resp.Diagnostics, "error",
+	// createPolicy.
+	combinedPolicies, attachedPolicies, errors := r.createPolicy(ctx, plan)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
 		"[API ERROR] Failed to Create the Policy.",
-		createErrs, "")
+		errors,
+		"",
+	)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	state.AttachedPolicies = plan.AttachedPolicies
-	state.AttachedPoliciesDetail = attachedPolicies
-	state.CombinedPolicesDetail = combinedPolicies
+	state = &iamPolicyV2ResourceModel{
+		AttachedPolicies:       plan.AttachedPolicies,
+		AttachedPoliciesDetail: attachedPolicies,
+		CombinedPolicesDetail:  combinedPolicies,
+		Role:                   plan.Role,
+		User:                   plan.User,
+		PermissionSet:          plan.PermissionSet,
+	}
 
-	if isRole {
-		if state.Role == nil {
-			state.Role = &roleBlock{}
-		}
-		state.Role.RoleName = plan.Role.RoleName
+	policyType, policyName := policyTypeOf(plan)
+
+	var attachPolicyToUserErr []error
+	switch policyType {
+	case "role":
+		attachPolicyToUserErr = r.attachPolicyToRole(ctx, state)
+	case "user":
+		attachPolicyToUserErr = r.attachPolicyToUser(ctx, state)
+	case "permissionSet":
+		attachPolicyToUserErr = r.attachPolicyToPermissionSet(ctx, state, 10*time.Minute)
+	default:
+		attachPolicyToUserErr = []error{fmt.Errorf("no valid target (role/user/permission_set) in plan")}
 	}
-	if isUser {
-		if state.User == nil {
-			state.User = &userBlock{}
-		}
-		state.User.UserName = plan.User.UserName
-	}
-	if isPS {
-		if state.PermissionSet == nil {
-			state.PermissionSet = &permissionSetBlock{}
-		}
-		state.PermissionSet.PolicyName = plan.PermissionSet.PolicyName
-		state.PermissionSet.PolicyPath = plan.PermissionSet.PolicyPath
-		state.PermissionSet.InstanceArn = plan.PermissionSet.InstanceArn
-		state.PermissionSet.PermissionSetArn = plan.PermissionSet.PermissionSetArn
+	if len(attachPolicyToUserErr) > 0 {
+		addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Attach Policy to target.", attachPolicyToUserErr, "")
+		return
 	}
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	switch {
-	case isRole:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", state.Role.RoleName),
-			readCombinedPolicyNotExistErr, "")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", state.Role.RoleName),
-			readCombinedPolicyErr, "")
-	case isUser:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", state.User.UserName),
-			readCombinedPolicyNotExistErr, "")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", state.User.UserName),
-			readCombinedPolicyErr, "")
-	case isPS:
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", state.PermissionSet.PolicyName),
-			readCombinedPolicyNotExistErr, "")
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", state.PermissionSet.PolicyName),
-			readCombinedPolicyErr, "")
-	}
+	addReadCombinedDiags(&resp.Diagnostics, policyName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if isRole {
-		errs := r.attachPolicyToRole(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Attach Policy to Role.", errs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	} else if isUser {
-		errs := r.attachPolicyToUser(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error", "[API ERROR] Failed to Attach Policy to User.", errs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	} else if isPS {
-		attachErrs := r.attachCustomerPoliciesToPermissionSet(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			"[API ERROR] Failed to attach customer-managed policies to Permission Set.",
-			attachErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		postProvErrs := r.provisionPermissionSetAll(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			"[API ERROR] Failed to provision Permission Set after attach.",
-			postProvErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
+	setStateDiags = resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state *iamPolicyV2ResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	diags := req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if state.PermissionSet != nil {
-		if state.PermissionSet.PolicyPath.IsNull() || state.PermissionSet.PolicyPath.IsUnknown() || state.PermissionSet.PolicyPath.ValueString() == "" {
-			state.PermissionSet.PolicyPath = types.StringValue("/")
-		}
-	}
-
-	subject := func() string {
-		switch {
-		case state.Role != nil:
-			return state.Role.RoleName.ValueString()
-		case state.User != nil:
-			return state.User.UserName.ValueString()
-		case state.PermissionSet != nil:
-			return state.PermissionSet.PolicyName.ValueString()
-		default:
-			return "(unknown-target)"
-		}
-	}()
-
-	switch {
-	case state.PermissionSet != nil:
-		if r.sso != nil &&
-			!state.PermissionSet.InstanceArn.IsNull() && !state.PermissionSet.InstanceArn.IsUnknown() &&
-			!state.PermissionSet.PermissionSetArn.IsNull() && !state.PermissionSet.PermissionSetArn.IsUnknown() {
-
-			// Detach customer-managed from permission set.
-			detachErrs := r.detachCustomerPoliciesFromPermissionSet(ctx, state)
-			addDiagnostics(&resp.Diagnostics, "error",
-				"[API ERROR] Failed to detach customer-managed policies from Permission Set.",
-				detachErrs, "")
-			if resp.Diagnostics.HasError() {
-				return
-			}
-
-			// Provision after detach.
-			provErrs := r.provisionPermissionSetAll(ctx, state)
-			addDiagnostics(&resp.Diagnostics, "error",
-				"[API ERROR] Failed to provision Permission Set after detach.", provErrs, "")
-			if resp.Diagnostics.HasError() {
-				return
-			}
-		}
-
-		// Remove the combined customer-managed policies.
-		rmErrs := r.removePolicy(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", subject),
-			rmErrs, "")
-		return
-
-	case state.Role != nil:
-		rmErrs := r.removePolicy(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", subject),
-			rmErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		return
-
-	case state.User != nil:
-		rmErrs := r.removePolicy(ctx, state)
-		addDiagnostics(&resp.Diagnostics, "error",
-			fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", subject),
-			rmErrs, "")
-		if resp.Diagnostics.HasError() {
-			return
-		}
+	// readAttachedPolicy.
+	_, readPolicyName := policyTypeOf(state)
+	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readPolicyName),
+		readAttachedPolicyNotExistErr,
+		"The policy that will be used to combine policies had been removed on AWS:",
+	)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readPolicyName),
+		readAttachedPolicyErr,
+		"",
+	)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	resp.Diagnostics.AddError("Missing target block", "One of `role {}`, `user {}`, or `permission_set {}` must be provided.")
+	// removePolicy.
+	removePolicyErr := r.removePolicy(ctx, state)
+	_, removePolicyName := policyTypeOf(state)
+	addDiagnostics(
+		&resp.Diagnostics,
+		"error",
+		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", removePolicyName),
+		removePolicyErr,
+		"",
+	)
+	if resp.Diagnostics.HasError() {
+
+		return
+	}
 }
 
-// `createPolicy` creates customer-managed IAM policies from the combined JSON documents.
+// createPolicy will create the combined policy and return the attached policies
+// details to be saved in state for comparing in Read() function.
 //
 // Parameters:
-//   - ctx : Request context.
-//   - plan: Desired configuration (role/user/permission_set, attached policies, etc.).
+//   - ctx: Context.
+//   - plan: Terraform plan configurations.
 //
 // Returns:
-//   - combinedPoliciesDetail  : Details of policies created from combined docs plus any excluded originals.
-//   - attachedPoliciesDetail  : Details describing the original inputs used (from combinePolicyDocument), for drift checks.
-//   - errList                 : Non-nil on failure (e.g., API errors during creation); nil on success.
+//   - combinedPoliciesDetail: The combined policies detail to be recorded in state file.
+//   - attachedPoliciesDetail: The attached policies detail to be recorded in state file.
+//   - errList: List of errors, return nil if no errors.
 func (r *iamPolicyV2Resource) createPolicy(ctx context.Context, plan *iamPolicyV2ResourceModel) (combinedPoliciesDetail []*policyV2Detail, attachedPoliciesDetail []*policyV2Detail, errList []error) {
 	var policies []string
 	plan.AttachedPolicies.ElementsAs(ctx, &policies, false)
-
-	combinedDocs, excludedPolicies, attachedPoliciesDetail, errList := r.combinePolicyDocument(ctx, plan)
+	combinedPolicyDocuments, excludedPolicies, attachedPoliciesDetail, errList := r.combinePolicyDocument(ctx, policies)
 	if errList != nil {
 		return nil, nil, errList
 	}
 
-	var (
-		prefix  string
-		pathPtr *string
-		usePath bool
-	)
-	switch {
-	case plan.Role != nil:
-		prefix = plan.Role.RoleName.ValueString()
-	case plan.User != nil:
-		prefix = plan.User.UserName.ValueString()
-	case plan.PermissionSet != nil:
-		prefix = plan.PermissionSet.PolicyName.ValueString()
-		// If want to create policies under a specific path for permission sets.
-		if !plan.PermissionSet.PolicyPath.IsNull() && !plan.PermissionSet.PolicyPath.IsUnknown() && plan.PermissionSet.PolicyPath.ValueString() != "" {
-			path := plan.PermissionSet.PolicyPath.ValueString()
-			pathPtr = &path
-			usePath = true
-		}
-	default:
-		return nil, nil, []error{fmt.Errorf("no target block (role/user/permission_set) was set")}
+	policyType, prefix := policyTypeOf(plan)
+	pathPtr := (*string)(nil)
+	usePath := false
+
+	if policyType == "ps" &&
+		plan.PermissionSet != nil &&
+		plan.PermissionSet.PolicyPath.ValueString() != "" {
+
+		path := plan.PermissionSet.PolicyPath.ValueString()
+		pathPtr = &path
+		usePath = true
 	}
 
-	create := func() error {
-		for i, doc := range combinedDocs {
+	createPolicy := func() error {
+		for i, policy := range combinedPolicyDocuments {
 			policyName := fmt.Sprintf("%s-%d", prefix, i+1)
 
-			in := &awsIamClient.CreatePolicyInput{
+			createPolicyRequest := &awsIamClient.CreatePolicyInput{
 				PolicyName:     aws.String(policyName),
-				PolicyDocument: aws.String(doc),
+				PolicyDocument: aws.String(policy),
 			}
 			if usePath {
-				in.Path = pathPtr
+				createPolicyRequest.Path = pathPtr
 			}
 
-			if _, err := r.client.CreatePolicy(ctx, in); err != nil {
+			if _, err := r.client.CreatePolicy(ctx, createPolicyRequest); err != nil {
 				return handleAPIError(err)
 			}
 		}
+
 		return nil
 	}
 
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(create, back); err != nil {
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err := backoff.Retry(createPolicy, reconnectBackoff)
+
+	if err != nil {
 		return nil, nil, []error{err}
 	}
 
-	for i, doc := range combinedDocs {
+	for i, policies := range combinedPolicyDocuments {
 		policyName := fmt.Sprintf("%s-%d", prefix, i+1)
+
 		combinedPoliciesDetail = append(combinedPoliciesDetail, &policyV2Detail{
 			PolicyName:     types.StringValue(policyName),
-			PolicyDocument: types.StringValue(doc),
+			PolicyDocument: types.StringValue(policies),
 		})
 	}
 
+	// These policies will be attached directly to the user since splitting the
+	// policy "statement" will be hitting the limitation of "maximum number of
+	// attached policies" easily.
 	combinedPoliciesDetail = append(combinedPoliciesDetail, excludedPolicies...)
+
 	return combinedPoliciesDetail, attachedPoliciesDetail, nil
 }
 
-// `combinePolicyDocument` packs multiple IAM policy documents into size-bounded “combined” policies.
+// combinePolicyDocument combine the policy with custom logic.
 //
 // Parameters:
-//   - ctx  : Request context.
-//   - plan : Desired configuration containing the attached policy IDs.
+//   - ctx: Context.
+//   - attachedPolicies: List of user attached policies to be combined.
 //
 // Returns:
-//   - combinedPolicyDocument : JSON strings of the newly combined policy documents (each under size limits).
-//   - excludedPolicies       : Policies that individually exceed the limit and must be attached as-is.
-//   - attachedPoliciesDetail : Details of all fetched inputs (used for drift detection/diagnostics).
-//   - errList                : Non-nil if fetch/unmarshal/processing failed; nil on success.
-func (r *iamPolicyV2Resource) combinePolicyDocument(ctx context.Context, plan *iamPolicyV2ResourceModel) (combinedPolicyDocument []string, excludedPolicies []*policyV2Detail, attachedPoliciesDetail []*policyV2Detail, errList []error) {
-	var inputIDs []string
-	plan.AttachedPolicies.ElementsAs(ctx, &inputIDs, false)
+//   - combinedPolicyDocument: The completed policy document after combining attached policies.
+//   - excludedPolicies: If the target policy exceeds maximum length, then do not combine the policy and return as excludedPolicies.
+//   - attachedPoliciesDetail: The attached policies detail to be recorded in state file.
+//   - errList: List of errors, return nil if no errors.
+func (r *iamPolicyV2Resource) combinePolicyDocument(ctx context.Context, attachedPolicies []string) (combinedPolicyDocument []string, excludedPolicies []*policyV2Detail, attachedPoliciesDetail []*policyV2Detail, errList []error) {
+	attachedPoliciesDetail, notExistErrList, unexpectedErrList := r.fetchPolicies(ctx, attachedPolicies)
 
-	attachedPoliciesDetail, notFound, unexpected := r.fetchPolicies(ctx, inputIDs)
-	errList = append(errList, notFound...)
-	errList = append(errList, unexpected...)
+	errList = append(errList, notExistErrList...)
+	errList = append(errList, unexpectedErrList...)
+
 	if len(errList) != 0 {
 		return nil, nil, nil, errList
 	}
 
-	maxLen := policyV2MaxLength
-	keywordLen := policyV2KeywordLength
+	currentLength := 0
+	currentPolicyDocument := ""
+	appendedPolicyDocument := make([]string, 0)
 
-	currentLen := 0
-	currentStmt := ""
-	var stmtBuckets []string
-
-	for _, ap := range attachedPoliciesDetail {
-		raw, err := url.QueryUnescape(ap.PolicyDocument.ValueString())
+	for _, attachedPolicy := range attachedPoliciesDetail {
+		tempPolicyDocument, err := url.QueryUnescape(attachedPolicy.PolicyDocument.ValueString())
 		if err != nil {
-			return nil, nil, nil, append(errList, err)
+			errList = append(errList, err)
+			return nil, nil, nil, errList
 		}
-
-		singlePolicy := strings.Join(strings.Fields(raw), "")
-		if len(singlePolicy) > maxLen {
+		// If the policy itself have more than 6144 characters, then skip the combine
+		// policy part since splitting the policy "statement" will be hitting the
+		// limitation of "maximum number of attached policies" easily.
+		noWhitespace := strings.Join(strings.Fields(tempPolicyDocument), "") //removes any whitespace including \t and \n
+		if len(noWhitespace) > policyMaxLength {
 			excludedPolicies = append(excludedPolicies, &policyV2Detail{
-				PolicyName:     ap.PolicyName,
-				PolicyDocument: types.StringValue(raw),
+				PolicyName:     attachedPolicy.PolicyName,
+				PolicyDocument: types.StringValue(tempPolicyDocument),
 			})
 			continue
 		}
 
-		var doc map[string]interface{}
-		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-			return nil, nil, nil, append(errList, err)
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
+			errList = append(errList, err)
+			return nil, nil, nil, errList
 		}
-		stmtBytes, err := json.Marshal(doc["Statement"])
+
+		statementBytes, err := json.Marshal(data["Statement"])
 		if err != nil {
-			return nil, nil, nil, append(errList, err)
+			errList = append(errList, err)
+			return nil, nil, nil, errList
 		}
-		finalStmt := strings.Trim(string(stmtBytes), "[]")
 
-		// Check if adding this would overflow the policy size.
-		if (currentLen + len(finalStmt) + keywordLen) > maxLen {
-			currentStmt = strings.TrimSuffix(currentStmt, ",")
-			if currentStmt != "" {
-				stmtBuckets = append(stmtBuckets, currentStmt)
-			}
-			currentStmt = finalStmt + ","
-			currentLen = len(finalStmt)
+		finalStatement := strings.Trim(string(statementBytes), "[]")
+		currentLength += len(finalStatement)
+
+		// Before further proceeding the current policy, we need to add a number
+		// of 'policyKeywordLength' to simulate the total length of completed
+		// policy to check whether it is already execeeded the max character
+		// length of 6144.
+		if (currentLength + policyV2KeywordLength) > policyV2MaxLength {
+			currentPolicyDocument = strings.TrimSuffix(currentPolicyDocument, ",")
+			appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
+			currentPolicyDocument = finalStatement + ","
+			currentLength = len(finalStatement)
 		} else {
-			currentStmt += finalStmt + ","
-			currentLen += len(finalStmt)
+			currentPolicyDocument += finalStatement + ","
 		}
 	}
 
-	if len(currentStmt) > 0 {
-		currentStmt = strings.TrimSuffix(currentStmt, ",")
-		stmtBuckets = append(stmtBuckets, currentStmt)
+	if len(currentPolicyDocument) > 0 {
+		currentPolicyDocument = strings.TrimSuffix(currentPolicyDocument, ",")
+		appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
 	}
 
-	for _, statement := range stmtBuckets {
-		combinedPolicyDocument = append(
-			combinedPolicyDocument,
-			fmt.Sprintf(`{"Version":"2012-10-17","Statement":[%s]}`, statement),
-		)
+	for _, policyStatement := range appendedPolicyDocument {
+		combinedPolicyDocument = append(combinedPolicyDocument, fmt.Sprintf(`{"Version":"2012-10-17","Statement":[%v]}`, policyStatement))
 	}
 
 	return combinedPolicyDocument, excludedPolicies, attachedPoliciesDetail, nil
 }
 
-// `readCombinedPolicy` refreshes details for the previously created “combined” policies.
+// readCombinedPolicy will read the combined policy details.
 //
 // Parameters:
-//   - ctx   : Request context.
-//   - state : Pointer to current resource state to be updated in place.
+//   - state: The state configurations, it will directly update the value of the struct since it is a pointer.
 //
 // Returns:
-//   - notExistErrs    : Allowed “not found” errors (useful for warnings / drift notices); nil if none.
-//   - unexpectedErrs  : Non-recoverable API/processing errors; nil on success.
+//   - notExistError: List of allowed not exist errors to be used as warning messages instead, return nil if no errors.
+//   - unexpectedError: List of unexpected errors to be used as normal error messages, return nil if no errors.
 func (r *iamPolicyV2Resource) readCombinedPolicy(ctx context.Context, state *iamPolicyV2ResourceModel) (notExistErrs, unexpectedErrs []error) {
 	var policiesName []string
 	for _, policy := range state.CombinedPolicesDetail {
@@ -912,7 +702,7 @@ func (r *iamPolicyV2Resource) readCombinedPolicy(ctx context.Context, state *iam
 	return notExistErrs, nil
 }
 
-// `readAttachedPolicy` will read the attached policy details.
+// readAttachedPolicy will read the attached policy details.
 //
 // Parameters:
 //   - state: The state configurations, it will directly update the value of the struct since it is a pointer.
@@ -943,57 +733,61 @@ func (r *iamPolicyV2Resource) readAttachedPolicy(ctx context.Context, state *iam
 	return notExistErrs, nil
 }
 
-// `fetchPolicies` looks up IAM policies by reference (name or ARN), then fetches their metadata and version docs.
+// fetchPolicies retrieve policy document through AWS SDK with backoff retry.
 //
 // Parameters:
-//   - ctx          : Request context.
-//   - policiesName : Slice of policy references (friendly names or ARNs).
+//   - policiesName: List of IAM policies name.
+//   - policyTypes: List of IAM policy types to retrieve.
 //
 // Returns:
-//   - policiesDetail : Details for all successfully fetched policies.
-//   - notExistError  : Errors indicating a policy wasn’t found (safe to warn/continue).
-//   - unexpectedError: Other API/processing errors (should usually surface as failures).
+//   - policiesDetail: List of retrieved policies detail.
+//   - notExistError: List of allowed not exist errors to be used as warning messages instead, return empty list if no errors.
+//   - unexpectedError: List of unexpected errors to be used as normal error messages, return empty list if no errors.
 func (r *iamPolicyV2Resource) fetchPolicies(ctx context.Context, policiesName []string) (policiesDetail []*policyV2Detail, notExistError, unexpectedError []error) {
+	getPolicyDocumentResponse := &awsIamClient.GetPolicyVersionOutput{}
+	getPolicyNameResponse := &awsIamClient.GetPolicyOutput{}
 	var ae smithy.APIError
 
-	for _, ref := range policiesName {
-		policyArn, policyVersionID, err := r.getPolicyArn(ctx, ref)
+	for _, attachedPolicy := range policiesName {
+		policyArn, policyVersionId, err := r.getPolicyArn(ctx, attachedPolicy)
+
 		if err != nil {
 			unexpectedError = append(unexpectedError, err)
 			continue
 		}
-		if policyArn == "" && policyVersionID == "" {
-			notExistError = append(notExistError, fmt.Errorf("policy %v does not exist", ref))
+
+		if policyArn == "" && policyVersionId == "" {
+			notExistError = append(notExistError, fmt.Errorf("policy %v does not exist", attachedPolicy))
 			continue
 		}
 
-		var verOut *awsIamClient.GetPolicyVersionOutput
-		var polOut *awsIamClient.GetPolicyOutput
-
 		getPolicy := func() error {
-			verIn := &awsIamClient.GetPolicyVersionInput{
+			getPolicyDocumentRequest := &awsIamClient.GetPolicyVersionInput{
 				PolicyArn: aws.String(policyArn),
-				VersionId: aws.String(policyVersionID),
+				VersionId: aws.String(policyVersionId),
 			}
-			out1, err := r.client.GetPolicyVersion(ctx, verIn)
-			if err != nil {
-				return handleAPIError(err)
-			}
-			verOut = out1
 
-			polIn := &awsIamClient.GetPolicyInput{PolicyArn: aws.String(policyArn)}
-			out2, err := r.client.GetPolicy(ctx, polIn)
+			getPolicyDocumentResponse, err = r.client.GetPolicyVersion(ctx, getPolicyDocumentRequest)
 			if err != nil {
 				return handleAPIError(err)
 			}
-			polOut = out2
+
+			getPolicyNameRequest := &awsIamClient.GetPolicyInput{
+				PolicyArn: aws.String(policyArn),
+			}
+
+			getPolicyNameResponse, err = r.client.GetPolicy(ctx, getPolicyNameRequest)
+			if err != nil {
+				return handleAPIError(err)
+			}
 			return nil
 		}
 
-		back := backoff.NewExponentialBackOff()
-		back.MaxElapsedTime = 30 * time.Second
-		err = backoff.Retry(getPolicy, back)
+		reconnectBackoff := backoff.NewExponentialBackOff()
+		reconnectBackoff.MaxElapsedTime = 30 * time.Second
+		err = backoff.Retry(getPolicy, reconnectBackoff)
 
+		// Handle permanent error returned from API.
 		if err != nil && errors.As(err, &ae) {
 			switch ae.ErrorCode() {
 			case "NoSuchEntity":
@@ -1001,18 +795,18 @@ func (r *iamPolicyV2Resource) fetchPolicies(ctx context.Context, policiesName []
 			default:
 				unexpectedError = append(unexpectedError, err)
 			}
-			continue
+		} else {
+			policiesDetail = append(policiesDetail, &policyV2Detail{
+				PolicyName:     types.StringValue(*getPolicyNameResponse.Policy.PolicyName),
+				PolicyDocument: types.StringValue(*getPolicyDocumentResponse.PolicyVersion.Document),
+			})
 		}
-		policiesDetail = append(policiesDetail, &policyV2Detail{
-			PolicyName:     types.StringValue(aws.ToString(polOut.Policy.PolicyName)),
-			PolicyDocument: types.StringValue(aws.ToString(verOut.PolicyVersion.Document)),
-		})
 	}
 
-	return policiesDetail, notExistError, unexpectedError
+	return
 }
 
-// `checkPoliciesDrift` compare the recorded AttachedPoliciesDetail documents with
+// checkPoliciesDrift compare the recorded AttachedPoliciesDetail documents with
 // the latest IAM policy documents on AWS, and trigger Update() if policy
 // drift is detected.
 //
@@ -1049,83 +843,39 @@ func (r *iamPolicyV2Resource) checkPoliciesDrift(newState, oriState *iamPolicyV2
 	return nil
 }
 
-// `removePolicy` detaches and (when safe) deletes the previously created combined IAM policies.
+// removePolicy will detach and delete the combined policies from user.
 //
 // Parameters:
-//   - ctx   : Request context.
-//   - state : Current resource state (provides Role/User/PermissionSet and CombinedPolicesDetail).
+//   - state: The recorded state configurations.
 //
-// Returns:
-//   - unexpectedError : Collected errors that should be surfaced as failures; nil on success.
+// removePolicy will detach and delete the combined policies from user.
+//
+// Parameters:
+//   - state: The recorded state configurations.
 func (r *iamPolicyV2Resource) removePolicy(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
+	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
 
-	permissionSetPath := "/"
-	if state.PermissionSet != nil &&
-		!state.PermissionSet.PolicyPath.IsNull() &&
-		!state.PermissionSet.PolicyPath.IsUnknown() &&
-		state.PermissionSet.PolicyPath.ValueString() != "" {
-		permissionSetPath = state.PermissionSet.PolicyPath.ValueString()
-	}
-
-	remove := func() error {
-		for _, combined := range state.CombinedPolicesDetail {
-			var policyArn, versionID string
-			arnBackoff := backoff.NewExponentialBackOff()
-			arnBackoff.MaxElapsedTime = 30 * time.Second
-			_ = backoff.Retry(func() error {
-				var err error
-				policyArn, versionID, err = r.getPolicyArn(ctx, combined.PolicyName.ValueString())
-				if err != nil {
-					return err
-				}
-				if len(policyArn) < 20 {
-					return fmt.Errorf("policy ARN not yet available for %q (version=%s)", combined.PolicyName.ValueString(), versionID)
-				}
-				return nil
-			}, arnBackoff)
-
-			if len(policyArn) < 20 {
+	removePolicy := func() error {
+		for _, combinedPolicy := range state.CombinedPolicesDetail {
+			policyArn, _, err := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
+			if err != nil {
+				unexpectedError = append(unexpectedError, err)
 				continue
 			}
 
 			switch {
 			case state.Role != nil:
-				skipDelete := false
 
 				if _, err := r.client.DetachRolePolicy(ctx, &awsIamClient.DetachRolePolicyInput{
 					PolicyArn: aws.String(policyArn),
 					RoleName:  aws.String(state.Role.RoleName.ValueString()),
-				}); err != nil {
-					if errors.As(err, &ae) {
-						switch ae.ErrorCode() {
-						case "NoSuchEntity":
-						case "UnmodifiableEntity", "AccessDenied":
-							skipDelete = true
-						default:
-							return handleAPIError(err)
-						}
-					} else {
-						return handleAPIError(err)
-					}
-				}
-
-				if !skipDelete {
-					wait := backoff.NewExponentialBackOff()
-					wait.MaxElapsedTime = 30 * time.Second
-					if err := backoff.Retry(func() error {
-						return r.ensurePolicyFullyDetached(ctx, policyArn)
-					}, wait); err != nil {
-						// Couldn’t prove detachment; don’t attempt deletion
-						skipDelete = true
-					}
-				}
-
-				if skipDelete {
-					continue
+				}); err != nil && !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
+					return handleAPIError(err)
 				}
 
 			case state.User != nil:
+
 				if _, err := r.client.DetachUserPolicy(ctx, &awsIamClient.DetachUserPolicyInput{
 					PolicyArn: aws.String(policyArn),
 					UserName:  aws.String(state.User.UserName.ValueString()),
@@ -1134,212 +884,121 @@ func (r *iamPolicyV2Resource) removePolicy(ctx context.Context, state *iamPolicy
 				}
 
 			case state.PermissionSet != nil:
-				if r.sso != nil &&
-					!state.PermissionSet.InstanceArn.IsNull() && !state.PermissionSet.InstanceArn.IsUnknown() &&
-					!state.PermissionSet.PermissionSetArn.IsNull() && !state.PermissionSet.PermissionSetArn.IsUnknown() {
-					arn, parseError := arn.Parse(policyArn)
-					if parseError == nil && arn.Service == "iam" && arn.AccountID == "aws" {
-						_, derr := r.sso.DetachManagedPolicyFromPermissionSet(ctx, &awsSsoAdminClient.DetachManagedPolicyFromPermissionSetInput{
-							InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
-							PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
-							ManagedPolicyArn: aws.String(policyArn),
-						})
-						if derr != nil && !(errors.As(derr, &ae) &&
-							(ae.ErrorCode() == "ResourceNotFoundException" || ae.ErrorCode() == "ValidationException")) {
-							return handleAPIError(derr)
-						}
-					} else {
-						_, derr := r.sso.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx, &awsSsoAdminClient.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
-							InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
-							PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
-							CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
-								Name: aws.String(combined.PolicyName.ValueString()),
-								Path: aws.String(permissionSetPath),
-							},
-						})
-						if derr != nil && !(errors.As(derr, &ae) &&
-							(ae.ErrorCode() == "ResourceNotFoundException" || ae.ErrorCode() == "ValidationException")) {
-							return handleAPIError(derr)
-						}
-					}
-					_ = r.provisionPermissionSetAll(ctx, state)
-				}
-			}
 
-			wait := backoff.NewExponentialBackOff()
-			wait.MaxElapsedTime = 30 * time.Second
-			if err := backoff.Retry(func() error {
-				return r.ensurePolicyFullyDetached(ctx, policyArn)
-			}, wait); err != nil {
-				return err
-			}
+				instanceArn := state.PermissionSet.InstanceArn.ValueString()
+				psArn := state.PermissionSet.PermissionSetArn.ValueString()
 
-			arn, parseError := arn.Parse(policyArn)
-			if parseError != nil || (arn.Service == "iam" && arn.AccountID == "aws") {
-				continue
-			}
-			if arn.Service != "iam" || len(arn.AccountID) != 12 {
-				continue
-			}
-			allDigits := true
-			for _, ch := range arn.AccountID {
-				if ch < '0' || ch > '9' {
-					allDigits = false
-					break
-				}
-			}
-			if !allDigits {
-				continue
-			}
-
-			policyVersion := awsIamClient.NewListPolicyVersionsPaginator(r.client, &awsIamClient.ListPolicyVersionsInput{
-				PolicyArn: &policyArn,
-			})
-			for policyVersion.HasMorePages() {
-				out, err := policyVersion.NextPage(ctx)
+				a, err := arn.Parse(policyArn)
 				if err != nil {
-					if errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity" {
-						break
-					}
-					return handleAPIError(err)
+					continue
 				}
-				for _, v := range out.Versions {
-					if v.IsDefaultVersion {
-						continue
+
+				if a.AccountID == "aws" {
+					if _, err := r.sso.DetachManagedPolicyFromPermissionSet(ctx, &awsSsoAdminClient.DetachManagedPolicyFromPermissionSetInput{
+						InstanceArn:      aws.String(instanceArn),
+						PermissionSetArn: aws.String(psArn),
+						ManagedPolicyArn: aws.String(policyArn),
+					}); err != nil {
+						if errors.As(err, &ae) {
+							if ae.ErrorCode() == "ResourceNotFoundException" || ae.ErrorCode() == "ValidationException" {
+							} else {
+								return handleAPIError(err)
+							}
+						} else {
+							return handleAPIError(err)
+						}
 					}
-					if _, err = r.client.DeletePolicyVersion(ctx, &awsIamClient.DeletePolicyVersionInput{
-						PolicyArn: &policyArn,
-						VersionId: v.VersionId,
-					}); err != nil && !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
+				} else {
+					if detErr := errors.Join(r.detachCustomerPoliciesFromPermissionSet(ctx, state)...); detErr != nil {
+						return fmt.Errorf("[API ERROR] Failed to detach customer-managed policies from Permission Set: %w", detErr)
+					}
+
+				}
+
+				if ok, errs := r.provisionPermissionSetAllWait(ctx, state, 10*time.Minute); !ok {
+					return fmt.Errorf("[API ERROR] Provisioning did not complete: %w", errors.Join(errs...))
+				}
+
+			}
+
+			a, err := arn.Parse(policyArn)
+			if err != nil {
+				continue
+			}
+
+			// The arn difference between AWS managed policy and customer managed policies:
+			// AWS managed policy: arn:aws:iam::*aws*:policy/XxxxXxxxx
+			// Customer managed policy: arn:aws:iam::*xxxxxxxxxxxx*:policy/xxxx-xxx-xxxx-xxxx-xxx-xx
+			// See http://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html for more information.
+			// To differentiate is the ** part, the part is AccountID field.
+			if a.AccountID == "aws" {
+				continue
+			}
+
+			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
+				PolicyArn: aws.String(policyArn),
+			}
+
+			// An IAM policy versions must be removed before deleting
+			// the policy. Refer to the below offcial IAM documents:
+			// https://docs.aws.amazon.com/IAM/latest/APIReference/API_DeletePolicy.html
+			if listPolicyVersionsResponse, err = r.client.ListPolicyVersions(ctx, listPolicyVersionsRequest); err != nil {
+				if errors.As(err, &ae) {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if ae.ErrorCode() != "NoSuchEntity" {
 						return handleAPIError(err)
 					}
 				}
 			}
 
-			if _, err := r.client.DeletePolicy(ctx, &awsIamClient.DeletePolicyInput{
-				PolicyArn: &policyArn,
-			}); err != nil && !(errors.As(err, &ae) && ae.ErrorCode() == "NoSuchEntity") {
-				return handleAPIError(err)
+			for _, policyVersion := range listPolicyVersionsResponse.Versions {
+				// Default version could not be deleted.
+				if policyVersion.IsDefaultVersion {
+					continue
+				}
+				deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
+					PolicyArn: aws.String(policyArn),
+					VersionId: aws.String(*policyVersion.VersionId),
+				}
+
+				if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
+					// Ignore error where the policy version does
+					// not exists in the policy as it was intended
+					// to delete the policy version.
+					if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
+						return handleAPIError(err)
+					}
+				}
 			}
-		}
-		return nil
-	}
 
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(remove, back); err != nil {
-		return append(unexpectedError, err)
-	}
-	return nil
-}
+			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
+				PolicyArn: aws.String(policyArn),
+			}
 
-// `ensurePolicyFullyDetached` detaches a customer-managed IAM policy from all principals (roles, users, groups) before deletion.
-//
-// Parameters:
-//   - ctx      : Request context.
-//   - policyArn: ARN of the policy to detach.
-//
-// Returns:
-//   - error: nil on success; non-nil if AWS calls fail or any attachments remain after detaching.
-func (r *iamPolicyV2Resource) ensurePolicyFullyDetached(ctx context.Context, policyArn string) error {
-	if len(policyArn) < 20 {
-		return nil
-	}
-
-	var ae smithy.APIError
-	out, err := r.client.ListEntitiesForPolicy(ctx, &awsIamClient.ListEntitiesForPolicyInput{
-		PolicyArn: aws.String(policyArn),
-	})
-	if err != nil {
-		return handleAPIError(err)
-	}
-
-	// Detach from roles, users, and groups so policy deletion won’t fail with DeleteConflict if other attachments exist.
-	// For role.
-	for _, role := range out.PolicyRoles {
-		_, derr := r.client.DetachRolePolicy(ctx, &awsIamClient.DetachRolePolicyInput{
-			PolicyArn: aws.String(policyArn),
-			RoleName:  role.RoleName,
-		})
-		if derr != nil && !(errors.As(derr, &ae) && ae.ErrorCode() == "NoSuchEntity") {
-			return handleAPIError(derr)
-		}
-	}
-
-	// For user.
-	for _, user := range out.PolicyUsers {
-		_, derr := r.client.DetachUserPolicy(ctx, &awsIamClient.DetachUserPolicyInput{
-			PolicyArn: aws.String(policyArn),
-			UserName:  user.UserName,
-		})
-		if derr != nil && !(errors.As(derr, &ae) && ae.ErrorCode() == "NoSuchEntity") {
-			return handleAPIError(derr)
-		}
-	}
-
-	// For group.
-	for _, grp := range out.PolicyGroups {
-		_, derr := r.client.DetachGroupPolicy(ctx, &awsIamClient.DetachGroupPolicyInput{
-			PolicyArn: aws.String(policyArn),
-			GroupName: grp.GroupName,
-		})
-		if derr != nil && !(errors.As(derr, &ae) && ae.ErrorCode() == "NoSuchEntity") {
-			return handleAPIError(derr)
-		}
-	}
-
-	out2, err := r.client.ListEntitiesForPolicy(ctx, &awsIamClient.ListEntitiesForPolicyInput{
-		PolicyArn: aws.String(policyArn),
-	})
-	if err != nil {
-		return handleAPIError(err)
-	}
-	if len(out2.PolicyRoles) > 0 || len(out2.PolicyUsers) > 0 || len(out2.PolicyGroups) > 0 {
-		return fmt.Errorf("policy still attached to %d role(s), %d user(s), %d group(s)",
-			len(out2.PolicyRoles), len(out2.PolicyUsers), len(out2.PolicyGroups))
-	}
-	return nil
-}
-
-// getPolicyArn resolves an IAM policy’s ARN and default version ID by its friendly name.
-//
-// Params:
-//   - ctx        : request context
-//   - policyName : friendly name to search
-//
-// Returns:
-//   - policyArn, policyVersionId : empty if not found
-//   - err                        : non-nil only if ListPolicies ultimately failed
-func (r *iamPolicyV2Resource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string, err error) {
-	var listPoliciesResponse *awsIamClient.ListPoliciesOutput
-
-	listPolicies := func() error {
-		listPoliciesResponse, err = r.client.ListPolicies(ctx, &awsIamClient.ListPoliciesInput{
-			MaxItems: aws.Int32(1000),
-			Scope:    "All",
-		})
-		if err != nil {
-			return handleAPIError(err)
+			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
+				// Ignore error where the policy had been deleted
+				// as it is intended to delete the IAM policy.
+				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
+					return handleAPIError(err)
+				}
+			}
 		}
 		return nil
 	}
 
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	err = backoff.Retry(listPolicies, reconnectBackoff)
-
-	for _, policyObj := range listPoliciesResponse.Policies {
-		if *policyObj.PolicyName == policyName {
-			policyArn = *policyObj.Arn
-			policyVersionId = *policyObj.DefaultVersionId
-		}
+	err := backoff.Retry(removePolicy, reconnectBackoff)
+	if err != nil {
+		return append(unexpectedError, err)
 	}
 
-	return policyArn, policyVersionId, err
+	return nil
 }
 
-// For role block.
-// `attachPolicyToRole` attach the IAM policy to role through AWS SDK.
+// attachPolicyToRole attach the IAM policy to role through AWS SDK.
 //
 // Parameters:
 //   - state: The recorded state configurations.
@@ -1377,15 +1036,13 @@ func (r *iamPolicyV2Resource) attachPolicyToRole(ctx context.Context, state *iam
 	return unexpectedError
 }
 
-// For user block.
-// `attachPolicyToUser` attaches each combined customer-managed policy in state to the target IAM user.
+// attachPolicyToUser attach the IAM policy to user through AWS SDK.
 //
 // Parameters:
-//   - ctx   : Request context.
-//   - state : Current resource state (must include User and CombinedPolicesDetail).
+//   - state: The recorded state configurations.
 //
 // Returns:
-//   - unexpectedError : Collected errors from ARN resolution or attach calls; nil if all succeeded.
+//   - err: Error.
 func (r *iamPolicyV2Resource) attachPolicyToUser(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
 	attachPolicyToUser := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
@@ -1417,42 +1074,29 @@ func (r *iamPolicyV2Resource) attachPolicyToUser(ctx context.Context, state *iam
 	return unexpectedError
 }
 
-// For permission set block.
-// `attachCustomerPoliciesToPermissionSet` attaches each combined customer-managed policy (by Name+Path)
-// to the target Identity Center Permission Set.
+// attachCustomerPoliciesToPermissionSet attaches the given customer-managed IAM policies
+// (identified by Name + Path) to the target AWS IAM Identity Center (SSO) Permission Set.
 //
 // Parameters:
-//   - ctx   : Request context.
-//   - state : Must contain PermissionSet (InstanceArn, PermissionSetArn, PolicyPath) and CombinedPolicesDetail.
+//   - ctx: request context (cancellation/deadline honored by retries)
+//   - state: model containing the Permission Set identifiers and path
+//   - policies: list of policy details to attach (names taken from PolicyName.ValueString())
 //
 // Returns:
-//   - unexpectedError : Collected non-retryable/validation errors; nil if all attachments succeeded or were conflicts.
-func (r *iamPolicyV2Resource) attachCustomerPoliciesToPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
-	if r.sso == nil {
-		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
-	}
-	if state.PermissionSet.InstanceArn.IsNull() || state.PermissionSet.InstanceArn.IsUnknown() ||
-		state.PermissionSet.PermissionSetArn.IsNull() || state.PermissionSet.PermissionSetArn.IsUnknown() {
-		return []error{fmt.Errorf("instance_arn and permission_set_arn are required")}
-	}
-	if len(state.CombinedPolicesDetail) == 0 {
-		return nil
-	}
-
-	attachFn := func() error {
+//   - err: Error.
+func (r *iamPolicyV2Resource) attachCustomerPoliciesToPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel, policies []*policyV2Detail) (unexpectedError []error) {
+	attachCustomerPoliciesToPermissionSet := func() error {
 		path := state.PermissionSet.PolicyPath.ValueString()
 		if path == "" {
 			path = "/"
 		}
 
-		var ae smithy.APIError
-
-		for _, combinedPolicy := range state.CombinedPolicesDetail {
+		for _, attachCustomerPoliciesToPermissionSetRequest := range policies {
 			input := &awsSsoAdminClient.AttachCustomerManagedPolicyReferenceToPermissionSetInput{
 				InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
 				PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
 				CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
-					Name: aws.String(combinedPolicy.PolicyName.ValueString()),
+					Name: aws.String(attachCustomerPoliciesToPermissionSetRequest.PolicyName.ValueString()),
 					Path: aws.String(path),
 				},
 			}
@@ -1461,21 +1105,6 @@ func (r *iamPolicyV2Resource) attachCustomerPoliciesToPermissionSet(ctx context.
 			if err == nil {
 				continue
 			}
-
-			if errors.As(err, &ae) {
-				switch ae.ErrorCode() {
-				case "ConflictException":
-					continue
-				case "ThrottlingException", "TooManyRequestsException", "ServiceQuotaExceededException":
-					return err
-				case "AccessDeniedException", "ValidationException", "ResourceNotFoundException":
-					unexpectedError = append(unexpectedError, handleAPIError(err))
-					continue
-				default:
-					return handleAPIError(err)
-				}
-			}
-
 			return handleAPIError(err)
 		}
 
@@ -1484,70 +1113,25 @@ func (r *iamPolicyV2Resource) attachCustomerPoliciesToPermissionSet(ctx context.
 
 	back := backoff.NewExponentialBackOff()
 	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(attachFn, back); err != nil {
+	if err := backoff.Retry(attachCustomerPoliciesToPermissionSet, back); err != nil {
 		unexpectedError = append(unexpectedError, err)
 	}
 
 	return unexpectedError
 }
 
-// `provisionPermissionSetAll` refreshes the given Permission Set across all
-// already-provisioned accounts in the Identity Center instance, retrying the
-// submission on transient errors with exponential backoff.
+// attachAWSManagedPoliciesToPermissionSet attaches the provided AWS-managed policy ARNs
+// to the target AWS IAM Identity Center (SSO) Permission Set.
 //
-// Parameters:
-//   - ctx   : Request context.
-//   - state : Must contain PermissionSet.InstanceArn and PermissionSet.PermissionSetArn.
-//
-// Returns:
-//   - unexpectedError : Collected errors if the provision call ultimately fails; nil on success.
-func (r *iamPolicyV2Resource) provisionPermissionSetAll(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
-	if r.sso == nil {
-		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
-	}
-	prov := func() error {
-		_, err := r.sso.ProvisionPermissionSet(ctx, &awsSsoAdminClient.ProvisionPermissionSetInput{
-			InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
-			PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
-			TargetType:       ssoTypes.ProvisionTargetTypeAllProvisionedAccounts,
-		})
-		if err != nil {
-			return handleAPIError(err)
-		}
-		return nil
-	}
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(prov, back); err != nil {
-		unexpectedError = append(unexpectedError, err)
-	}
-	return unexpectedError
-}
-
-// `attachAWSManagedPoliciesToPermissionSet` attaches a list of AWS-managed policy ARNs
-// to the Permission Set's "AWS managed policies" section.
-//
-// Parameters:
-//   - ctx   : Request context.
-//   - state : Must contain PermissionSet.InstanceArn and PermissionSet.PermissionSetArn.
-//   - awsManagedPolicyArns : ARNs of AWS-managed policies to attach.
+// Parameters
+//   - ctx: request context (cancellation/deadline honored by retries)
+//   - state: model containing the Permission Set identifiers
+//   - awsManagedPolicyArns: list of AWS-managed policy ARNs to attach
 //
 // Returns:
-//   - unexpectedError : Collected non-retryable/validation errors; nil if all attachments succeeded or were conflicts.
+//   - err: Error.
 func (r *iamPolicyV2Resource) attachAWSManagedPoliciesToPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel, awsManagedPolicyArns []string) (unexpectedError []error) {
-	if r.sso == nil {
-		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
-	}
-	if state.PermissionSet.InstanceArn.IsNull() || state.PermissionSet.InstanceArn.IsUnknown() ||
-		state.PermissionSet.PermissionSetArn.IsNull() || state.PermissionSet.PermissionSetArn.IsUnknown() {
-		return []error{fmt.Errorf("instance_arn and permission_set_arn are required")}
-	}
-	if len(awsManagedPolicyArns) == 0 {
-		return nil
-	}
-
-	attachFn := func() error {
-		var ae smithy.APIError
+	attachAWSManagedPoliciesToPermissionSet := func() error {
 		for _, arnStr := range awsManagedPolicyArns {
 			_, err := r.sso.AttachManagedPolicyToPermissionSet(ctx, &awsSsoAdminClient.AttachManagedPolicyToPermissionSetInput{
 				InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
@@ -1557,19 +1141,6 @@ func (r *iamPolicyV2Resource) attachAWSManagedPoliciesToPermissionSet(ctx contex
 			if err == nil {
 				continue
 			}
-			if errors.As(err, &ae) {
-				switch ae.ErrorCode() {
-				case "ConflictException":
-					continue
-				case "ThrottlingException", "TooManyRequestsException", "ServiceQuotaExceededException":
-					return err
-				case "AccessDeniedException", "ValidationException", "ResourceNotFoundException":
-					unexpectedError = append(unexpectedError, handleAPIError(err))
-					continue
-				default:
-					return handleAPIError(err)
-				}
-			}
 			return handleAPIError(err)
 		}
 		return nil
@@ -1577,42 +1148,217 @@ func (r *iamPolicyV2Resource) attachAWSManagedPoliciesToPermissionSet(ctx contex
 
 	back := backoff.NewExponentialBackOff()
 	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(attachFn, back); err != nil {
+	if err := backoff.Retry(attachAWSManagedPoliciesToPermissionSet, back); err != nil {
 		unexpectedError = append(unexpectedError, err)
 	}
 	return unexpectedError
 }
 
-// `detachCustomerPoliciesFromPermissionSet` removes selected CUSTOMER-managed policy references from a Permission Set.
+// attachPolicyToPermissionSet attaches both customer-managed (combined) and AWS-managed policies
+// to the target AWS IAM Identity Center (SSO) Permission Set, then provisions the Permission Set
+// across all provisioned accounts.
 //
-// Parameters:
-//   - ctx   : Request context.
-//   - state : Must contain PermissionSet (InstanceArn, PermissionSetArn, PolicyPath) and CombinedPolicesDetail.
+// Parameters
+//   - ctx: request context (cancellation/deadline honored by retries)
+//   - state: model containing Permission Set identifiers and CombinedPolicesDetail
+//   - provisionTimeout: maximum time to wait for provisioning to reach SUCCEEDED
 //
 // Returns:
-//   - unexpectedError : Collected non-retryable errors; nil if all needed detaches succeeded or were benign.
-func (r *iamPolicyV2Resource) detachCustomerPoliciesFromPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
-	if r.sso == nil {
-		return []error{fmt.Errorf("SSO Admin client is nil; ensure provider configured ssoadmin.Client")}
-	}
-	if state.PermissionSet.InstanceArn.IsNull() || state.PermissionSet.InstanceArn.IsUnknown() ||
-		state.PermissionSet.PermissionSetArn.IsNull() || state.PermissionSet.PermissionSetArn.IsUnknown() {
-		return []error{fmt.Errorf("instance_arn and permission_set_arn are required to detach policies")}
-	}
-
-	want := map[string]struct{}{}
-	for _, cp := range state.CombinedPolicesDetail {
-		want[cp.PolicyName.ValueString()] = struct{}{}
+//   - err: Error.
+func (r *iamPolicyV2Resource) attachPolicyToPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel, provisionTimeout time.Duration) (unexpectedErrs []error) {
+	if len(state.CombinedPolicesDetail) == 0 {
+		if ok, errs := r.provisionPermissionSetAllWait(ctx, state, provisionTimeout); !ok {
+			return append(unexpectedErrs, errs...)
+		}
+		return nil
 	}
 
-	listAndDetach := func() error {
-		path := state.PermissionSet.PolicyPath.ValueString()
-		if path == "" {
-			path = "/"
+	prefix := state.PermissionSet.PermissionSetName.ValueString() + "-"
+
+	var customerManagedPolicy []*policyV2Detail
+	var awsManagedPolicy []*policyV2Detail
+
+	for _, d := range state.CombinedPolicesDetail {
+		if strings.HasPrefix(d.PolicyName.ValueString(), prefix) {
+			customerManagedPolicy = append(customerManagedPolicy, d)
+		} else {
+			awsManagedPolicy = append(awsManagedPolicy, d)
+		}
+	}
+
+	// Attach customer-managed policy.
+	if len(customerManagedPolicy) > 0 {
+		if errs := r.attachCustomerPoliciesToPermissionSet(ctx, state, customerManagedPolicy); len(errs) > 0 {
+			unexpectedErrs = append(unexpectedErrs, errs...)
+		}
+	}
+
+	// Attach AWS-managed policy.
+	if len(awsManagedPolicy) > 0 {
+		awsManagedArns := make([]string, 0, len(awsManagedPolicy))
+		var resolvedArnErrs []error
+
+		for _, awsManagedPolicyArn := range awsManagedPolicy {
+			resolvedArn, _, err := r.getPolicyArn(ctx, awsManagedPolicyArn.PolicyName.ValueString())
+			if err != nil || resolvedArn == "" {
+				if err == nil {
+					err = fmt.Errorf("policy %q not found", awsManagedPolicyArn.PolicyName.ValueString())
+				}
+				resolvedArnErrs = append(resolvedArnErrs, handleAPIError(err))
+				continue
+			}
+			awsManagedArns = append(awsManagedArns, resolvedArn)
 		}
 
+		if len(resolvedArnErrs) > 0 {
+			unexpectedErrs = append(unexpectedErrs, resolvedArnErrs...)
+		}
+
+		if len(awsManagedArns) > 0 {
+			if awsManagedArnsErrs := r.attachAWSManagedPoliciesToPermissionSet(ctx, state, awsManagedArns); len(awsManagedArnsErrs) > 0 {
+				unexpectedErrs = append(unexpectedErrs, awsManagedArnsErrs...)
+			}
+		}
+	}
+
+	if ok, errs := r.provisionPermissionSetAllWait(ctx, state, provisionTimeout); !ok {
+		unexpectedErrs = append(unexpectedErrs, errs...)
+	}
+
+	return unexpectedErrs
+}
+
+// provisionPermissionSetAllWait triggers provisioning of the Permission Set to all
+// provisioned accounts and waits until the request reaches SUCCEEDED (or fails/timeouts).
+//
+// Parameters
+//   - ctx: request context (cancellation/deadline honored in retries).
+//   - state: model containing Permission Set identifiers (InstanceArn, PermissionSetArn).
+//   - maxWait: maximum total time to wait for the provisioning status to reach SUCCEEDED.
+//
+// Returns
+//   - ok: true if provisioning completed with SUCCEEDED; false otherwise.
+//   - err: Error.
+func (r *iamPolicyV2Resource) provisionPermissionSetAllWait(ctx context.Context, state *iamPolicyV2ResourceModel, maxWait time.Duration) (ok bool, unexpectedError []error) {
+	var reqID string
+	provisionPermissionSetRequest := func() error {
+		provisionPermissionSet, err := r.sso.ProvisionPermissionSet(ctx, &awsSsoAdminClient.ProvisionPermissionSetInput{
+			InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
+			PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
+			TargetType:       ssoTypes.ProvisionTargetTypeAllProvisionedAccounts,
+		})
+		if err != nil {
+			var ae smithy.APIError
+			if errors.As(err, &ae) && (ae.ErrorCode() == "ThrottlingException" || ae.ErrorCode() == "TooManyRequestsException" || ae.ErrorCode() == "ProvisioningInProgressException") {
+				return err
+			}
+			return backoff.Permanent(handleAPIError(err))
+		}
+		if provisionPermissionSet == nil || provisionPermissionSet.PermissionSetProvisioningStatus == nil || provisionPermissionSet.PermissionSetProvisioningStatus.RequestId == nil {
+			return fmt.Errorf("provision call returned no request id")
+		}
+		reqID = aws.ToString(provisionPermissionSet.PermissionSetProvisioningStatus.RequestId)
+		return nil
+	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 2 * time.Minute
+	if err := backoff.Retry(provisionPermissionSetRequest, reconnectBackoff); err != nil {
+		return false, []error{err}
+	}
+
+	waitBackoff := backoff.NewExponentialBackOff()
+	waitBackoff.MaxElapsedTime = maxWait
+
+	describePermissionSetProvisioningStatusRequest := backoff.Retry(func() error {
+		describePermissionSetProvisioningStatus, err := r.sso.DescribePermissionSetProvisioningStatus(ctx, &awsSsoAdminClient.DescribePermissionSetProvisioningStatusInput{
+			InstanceArn:                     aws.String(state.PermissionSet.InstanceArn.ValueString()),
+			ProvisionPermissionSetRequestId: aws.String(reqID),
+		})
+		if err != nil {
+			var ae smithy.APIError
+			if errors.As(err, &ae) && (ae.ErrorCode() == "ThrottlingException" || ae.ErrorCode() == "TooManyRequestsException") {
+				return err
+			}
+			return backoff.Permanent(err)
+		}
+		if describePermissionSetProvisioningStatus == nil || describePermissionSetProvisioningStatus.PermissionSetProvisioningStatus == nil {
+			return fmt.Errorf("empty provisioning status for %s", reqID)
+		}
+		switch describePermissionSetProvisioningStatus.PermissionSetProvisioningStatus.Status {
+		case ssoTypes.StatusValuesSucceeded:
+			return nil
+		case ssoTypes.StatusValuesFailed:
+			return backoff.Permanent(fmt.Errorf("provisioning %s failed: %s",
+				reqID, aws.ToString(describePermissionSetProvisioningStatus.PermissionSetProvisioningStatus.FailureReason)))
+		default:
+			return fmt.Errorf("still waiting on provisioning %s", reqID)
+		}
+	}, waitBackoff)
+
+	if describePermissionSetProvisioningStatusRequest != nil {
+		return false, []error{describePermissionSetProvisioningStatusRequest}
+	}
+	return true, nil
+}
+
+// detachCustomerPoliciesFromPermissionSet detaches the specified customer-managed policy
+// references from a Permission Set and waits until each (Name, Path) reference disappears.
+//
+// Parameters
+//   - ctx: request context (cancellation/deadline honored by retries)
+//   - state: model containing Permission Set identifiers and the target policy names in CombinedPolicesDetail.
+//
+// Returns
+//   - err: Error.
+func (r *iamPolicyV2Resource) detachCustomerPoliciesFromPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
+	customerPolicies := map[string]struct{}{}
+	for _, combinedPolicy := range state.CombinedPolicesDetail {
+		if !combinedPolicy.PolicyName.IsNull() && !combinedPolicy.PolicyName.IsUnknown() && combinedPolicy.PolicyName.ValueString() != "" {
+			customerPolicies[combinedPolicy.PolicyName.ValueString()] = struct{}{}
+		}
+	}
+
+	// To ensure the policy has been fully detach, keep on polls the `ListCustomerManagedPolicyReferencesInPermissionSet`
+	// until the (Name, Path) reference disappears.
+	waitDetachCustomerPoliciesFromPermissionSet := func(name, path string, maxWait time.Duration) error {
+		if strings.TrimSpace(path) == "" {
+			path = "/"
+		}
+		listCustomerManagedPolicyReferencesInPermissionSetRequest := func() error {
+			listCustomerManagedPolicyReferencesInPermissionSet, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
+				&awsSsoAdminClient.ListCustomerManagedPolicyReferencesInPermissionSetInput{
+					InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
+					PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
+				})
+			if err != nil {
+				var ae smithy.APIError
+				if errors.As(err, &ae) && (ae.ErrorCode() == "NoSuchEntity" || ae.ErrorCode() == "ResourceNotFoundException") {
+					return nil
+				}
+				return err
+			}
+			for _, reference := range listCustomerManagedPolicyReferencesInPermissionSet.CustomerManagedPolicyReferences {
+				referenceName := aws.ToString(reference.Name)
+				referencePath := aws.ToString(reference.Path)
+				if strings.TrimSpace(referencePath) == "" {
+					referencePath = "/"
+				}
+				if referenceName == name && referencePath == path {
+					return fmt.Errorf("policy %s still referenced (path %s)", name, path)
+				}
+			}
+			return nil
+		}
+		waitBackoff := backoff.NewExponentialBackOff()
+		waitBackoff.MaxElapsedTime = maxWait
+		return backoff.Retry(listCustomerManagedPolicyReferencesInPermissionSetRequest, backoff.WithContext(waitBackoff, ctx))
+	}
+
+	listAndDetachCustomerPoliciesFromPermissionSet := func() error {
 		var ae smithy.APIError
-		out, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
+
+		listCustomerManagedPolicyReferencesInPermissionSetRequest, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
 			&awsSsoAdminClient.ListCustomerManagedPolicyReferencesInPermissionSetInput{
 				InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
 				PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
@@ -1624,21 +1370,27 @@ func (r *iamPolicyV2Resource) detachCustomerPoliciesFromPermissionSet(ctx contex
 			return handleAPIError(err)
 		}
 
-		for _, ref := range out.CustomerManagedPolicyReferences {
+		for _, ref := range listCustomerManagedPolicyReferencesInPermissionSetRequest.CustomerManagedPolicyReferences {
 			if ref.Name == nil {
 				continue
 			}
-			name := *ref.Name
-			if _, ok := want[name]; !ok {
+			referenceName := aws.ToString(ref.Name)
+			actualPath := aws.ToString(ref.Path)
+			if strings.TrimSpace(actualPath) == "" {
+				actualPath = "/"
+			}
+
+			if _, ok := customerPolicies[referenceName]; !ok {
 				continue
 			}
+
 			_, err := r.sso.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx,
 				&awsSsoAdminClient.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
 					InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
 					PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
 					CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
-						Name: aws.String(name),
-						Path: aws.String(path),
+						Name: aws.String(referenceName),
+						Path: aws.String(actualPath),
 					},
 				})
 			if err != nil {
@@ -1653,14 +1405,80 @@ func (r *iamPolicyV2Resource) detachCustomerPoliciesFromPermissionSet(ctx contex
 				unexpectedError = append(unexpectedError, handleAPIError(err))
 				continue
 			}
+
+			// After a successful detach, wait until the reference is actually gone.
+			if waitErr := waitDetachCustomerPoliciesFromPermissionSet(referenceName, actualPath, 90*time.Second); waitErr != nil {
+				unexpectedError = append(unexpectedError, waitErr)
+			}
 		}
 		return nil
 	}
 
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(listAndDetach, back); err != nil {
+	waitBackoff := backoff.NewExponentialBackOff()
+	waitBackoff.MaxElapsedTime = 30 * time.Second
+	if err := backoff.Retry(listAndDetachCustomerPoliciesFromPermissionSet, backoff.WithContext(waitBackoff, ctx)); err != nil {
 		unexpectedError = append(unexpectedError, err)
 	}
 	return unexpectedError
+}
+
+func (r *iamPolicyV2Resource) getPolicyArn(ctx context.Context, policyName string) (policyArn string, policyVersionId string, err error) {
+	var listPoliciesResponse *awsIamClient.ListPoliciesOutput
+
+	listPolicies := func() error {
+		listPoliciesResponse, err = r.client.ListPolicies(ctx, &awsIamClient.ListPoliciesInput{
+			MaxItems: aws.Int32(1000),
+			Scope:    "All",
+		})
+		if err != nil {
+			return handleAPIError(err)
+		}
+		return nil
+	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err = backoff.Retry(listPolicies, reconnectBackoff)
+
+	for _, policyObj := range listPoliciesResponse.Policies {
+		if *policyObj.PolicyName == policyName {
+			policyArn = *policyObj.Arn
+			policyVersionId = *policyObj.DefaultVersionId
+		}
+	}
+
+	return policyArn, policyVersionId, err
+}
+
+func policyTypeOf(m *iamPolicyV2ResourceModel) (policyType string, policyName string) {
+	if m == nil {
+		return "", "(unknown-target)"
+	}
+	if m.Role != nil && !m.Role.RoleName.IsNull() && !m.Role.RoleName.IsUnknown() && m.Role.RoleName.ValueString() != "" {
+		return "role", m.Role.RoleName.ValueString()
+	}
+	if m.User != nil && !m.User.UserName.IsNull() && !m.User.UserName.IsUnknown() && m.User.UserName.ValueString() != "" {
+		return "user", m.User.UserName.ValueString()
+	}
+	if m.PermissionSet != nil && !m.PermissionSet.PermissionSetName.IsNull() && !m.PermissionSet.PermissionSetName.IsUnknown() && m.PermissionSet.PermissionSetName.ValueString() != "" {
+		return "permissionSet", m.PermissionSet.PermissionSetName.ValueString()
+	}
+	return "", "(unknown-target)"
+}
+
+func addReadCombinedDiags(diags *diag.Diagnostics, policyName string, notFoundErrs, unexpectedErrs []error) {
+	if len(notFoundErrs) > 0 {
+		addDiagnostics(
+			diags, "error",
+			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", policyName),
+			notFoundErrs, "",
+		)
+	}
+	if len(unexpectedErrs) > 0 {
+		addDiagnostics(
+			diags, "error",
+			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", policyName),
+			unexpectedErrs, "",
+		)
+	}
 }
