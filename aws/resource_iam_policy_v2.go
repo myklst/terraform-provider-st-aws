@@ -262,9 +262,9 @@ func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// Read back combined policy once, add standard diags
-	nf, re := r.readCombinedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, policyName, nf, re)
+	// Create policy are not expected to have not found warning.
+	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
+	addReadCombinedDiags(&resp.Diagnostics, policyName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -356,6 +356,7 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 	}
 }
 
+// Read the attached policy. -> If got changes, remove policy. -> Create the policy again. -> Attach to the targets.
 func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state *iamPolicyV2ResourceModel
 	getPlanDiags := req.Config.Get(ctx, &plan)
@@ -1230,7 +1231,8 @@ func (r *iamPolicyV2Resource) attachPolicyToPermissionSet(ctx context.Context, s
 
 // provisionPermissionSetAllWait triggers provisioning of the Permission Set to all
 // provisioned accounts and waits until the request reaches SUCCEEDED (or fails/timeouts).
-//
+// Every time having changes will need to provision again to all accounts.
+// 
 // Parameters
 //   - ctx: request context (cancellation/deadline honored in retries).
 //   - state: model containing Permission Set identifiers (InstanceArn, PermissionSetArn).
