@@ -244,10 +244,10 @@ func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateReq
 		PermissionSet:          plan.PermissionSet,
 	}
 
-	policyType, policyName := policyTypeOf(plan)
+	assigneeType, assigneeName := assigneeTypeoOf(plan)
 
 	var attachErrs []error
-	switch policyType {
+	switch assigneeType {
 	case "role":
 		attachErrs = r.attachPolicyToRole(ctx, state)
 	case "user":
@@ -264,7 +264,7 @@ func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateReq
 
 	// Create policy are not expected to have not found warning.
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, policyName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
+	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -292,20 +292,20 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	_, policyName := policyTypeOf(state)
+	_, assigneeName := assigneeTypeoOf(state)
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"warning",
-		fmt.Sprintf("[API WARNING] Failed to Read Combined Policies for %v: Policy Not Found!", policyName),
+		fmt.Sprintf("[API WARNING] Failed to Read Combined Policies for %v: Policy Not Found!", assigneeName),
 		readCombinedPolicyNotExistErr,
 		"The combined policies may be deleted due to human mistake or API error, will trigger update to recreate the combined policy:",
 	)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", policyName),
+		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", assigneeName),
 		readCombinedPolicyErr,
 		"",
 	)
@@ -317,18 +317,21 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
+	// If the attached policy not found, it should return warning instead of error
+	// because there is no ways to get plan configuration in Read() function to
+	// indicate user had removed the non existed policies from the input.
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"warning",
-		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", policyName),
+		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", assigneeName),
 		readAttachedPolicyNotExistErr,
 		"The policy that will be used to combine policies had been removed on AWS, next apply with update will prompt error:",
 	)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", policyName),
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", assigneeName),
 		readAttachedPolicyErr,
 		"",
 	)
@@ -344,7 +347,7 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 	addDiagnostics(
 		&resp.Diagnostics,
 		"warning",
-		fmt.Sprintf("[API WARNING] Policy Drift Detected for %v.", policyName),
+		fmt.Sprintf("[API WARNING] Policy Drift Detected for %v.", assigneeName),
 		[]error{compareAttachedPoliciesErr},
 		"This resource will be updated in the next terraform apply.",
 	)
@@ -372,19 +375,19 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	// readAttachedPolicy.
-	_, readPolicyName := policyTypeOf(state)
+	_, readAssigneeName := assigneeTypeoOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, plan)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readPolicyName),
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readAssigneeName),
 		readAttachedPolicyNotExistErr,
 		"The policy that will be used to combine policies had been removed on AWS:",
 	)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readPolicyName),
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readAssigneeName),
 		readAttachedPolicyErr,
 		"",
 	)
@@ -394,7 +397,7 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 
 	// removePolicy.
 	removePolicyErr := r.removePolicy(ctx, state)
-	_, removePolicyName := policyTypeOf(state)
+	_, removePolicyName := assigneeTypeoOf(state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
@@ -435,10 +438,10 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 		PermissionSet:          plan.PermissionSet,
 	}
 
-	policyType, policyName := policyTypeOf(plan)
+	assigneeType, assigneeName := assigneeTypeoOf(plan)
 
 	var attachPolicyToUserErr []error
-	switch policyType {
+	switch assigneeType {
 	case "role":
 		attachPolicyToUserErr = r.attachPolicyToRole(ctx, state)
 	case "user":
@@ -454,7 +457,7 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, policyName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
+	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -475,19 +478,19 @@ func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 
 	// readAttachedPolicy.
-	_, readPolicyName := policyTypeOf(state)
+	_, readAssigneeName := assigneeTypeoOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readPolicyName),
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readAssigneeName),
 		readAttachedPolicyNotExistErr,
 		"The policy that will be used to combine policies had been removed on AWS:",
 	)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readPolicyName),
+		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readAssigneeName),
 		readAttachedPolicyErr,
 		"",
 	)
@@ -497,7 +500,7 @@ func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteReq
 
 	// removePolicy.
 	removePolicyErr := r.removePolicy(ctx, state)
-	_, removePolicyName := policyTypeOf(state)
+	_, removePolicyName := assigneeTypeoOf(state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
@@ -530,11 +533,11 @@ func (r *iamPolicyV2Resource) createPolicy(ctx context.Context, plan *iamPolicyV
 		return nil, nil, errList
 	}
 
-	policyType, prefix := policyTypeOf(plan)
+	assigneeType, prefix := assigneeTypeoOf(plan)
 	pathPtr := (*string)(nil)
 	usePath := false
 
-	if policyType == "ps" &&
+	if assigneeType == "permissionSet" &&
 		plan.PermissionSet != nil &&
 		plan.PermissionSet.PolicyPath.ValueString() != "" {
 
@@ -738,7 +741,6 @@ func (r *iamPolicyV2Resource) readAttachedPolicy(ctx context.Context, state *iam
 //
 // Parameters:
 //   - policiesName: List of IAM policies name.
-//   - policyTypes: List of IAM policy types to retrieve.
 //
 // Returns:
 //   - policiesDetail: List of retrieved policies detail.
@@ -849,10 +851,6 @@ func (r *iamPolicyV2Resource) checkPoliciesDrift(newState, oriState *iamPolicyV2
 // Parameters:
 //   - state: The recorded state configurations.
 //
-// removePolicy will detach and delete the combined policies from user.
-//
-// Parameters:
-//   - state: The recorded state configurations.
 func (r *iamPolicyV2Resource) removePolicy(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
 	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
@@ -1179,11 +1177,11 @@ func (r *iamPolicyV2Resource) attachPolicyToPermissionSet(ctx context.Context, s
 	var customerManagedPolicy []*policyV2Detail
 	var awsManagedPolicy []*policyV2Detail
 
-	for _, d := range state.CombinedPolicesDetail {
-		if strings.HasPrefix(d.PolicyName.ValueString(), prefix) {
-			customerManagedPolicy = append(customerManagedPolicy, d)
+	for _, combinedPolicy := range state.CombinedPolicesDetail {
+		if strings.HasPrefix(combinedPolicy.PolicyName.ValueString(), prefix) {
+			customerManagedPolicy = append(customerManagedPolicy, combinedPolicy)
 		} else {
-			awsManagedPolicy = append(awsManagedPolicy, d)
+			awsManagedPolicy = append(awsManagedPolicy, combinedPolicy)
 		}
 	}
 
@@ -1232,7 +1230,7 @@ func (r *iamPolicyV2Resource) attachPolicyToPermissionSet(ctx context.Context, s
 // provisionPermissionSetAllWait triggers provisioning of the Permission Set to all
 // provisioned accounts and waits until the request reaches SUCCEEDED (or fails/timeouts).
 // Every time having changes will need to provision again to all accounts.
-// 
+//
 // Parameters
 //   - ctx: request context (cancellation/deadline honored in retries).
 //   - state: model containing Permission Set identifiers (InstanceArn, PermissionSetArn).
@@ -1452,7 +1450,7 @@ func (r *iamPolicyV2Resource) getPolicyArn(ctx context.Context, policyName strin
 	return policyArn, policyVersionId, err
 }
 
-func policyTypeOf(m *iamPolicyV2ResourceModel) (policyType string, policyName string) {
+func assigneeTypeoOf(m *iamPolicyV2ResourceModel) (assigneeType string, assigneeName string) {
 	if m == nil {
 		return "", "(unknown-target)"
 	}
@@ -1468,18 +1466,18 @@ func policyTypeOf(m *iamPolicyV2ResourceModel) (policyType string, policyName st
 	return "", "(unknown-target)"
 }
 
-func addReadCombinedDiags(diags *diag.Diagnostics, policyName string, notFoundErrs, unexpectedErrs []error) {
+func addReadCombinedDiags(diags *diag.Diagnostics, assigneeName string, notFoundErrs, unexpectedErrs []error) {
 	if len(notFoundErrs) > 0 {
 		addDiagnostics(
 			diags, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", policyName),
+			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", assigneeName),
 			notFoundErrs, "",
 		)
 	}
 	if len(unexpectedErrs) > 0 {
 		addDiagnostics(
 			diags, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", policyName),
+			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", assigneeName),
 			unexpectedErrs, "",
 		)
 	}

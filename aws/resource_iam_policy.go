@@ -849,11 +849,6 @@ func (r *iamPolicyResource) checkPoliciesDrift(newState, oriState *iamPolicyReso
 //
 // Parameters:
 //   - state: The recorded state configurations.
-//
-// removePolicy will detach and delete the combined policies from user.
-//
-// Parameters:
-//   - state: The recorded state configurations.
 func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
 	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
