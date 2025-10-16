@@ -295,20 +295,10 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 	_, assigneeName := assigneeTypeoOf(state)
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"warning",
-		fmt.Sprintf("[API WARNING] Failed to Read Combined Policies for %v: Policy Not Found!", assigneeName),
-		readCombinedPolicyNotExistErr,
-		"The combined policies may be deleted due to human mistake or API error, will trigger update to recreate the combined policy:",
-	)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", assigneeName),
-		readCombinedPolicyErr,
-		"",
-	)
+	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Set state so that Terraform will trigger update if there are changes in state.
 	setStateDiags := resp.State.Set(ctx, &state)
@@ -321,20 +311,7 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 	// because there is no ways to get plan configuration in Read() function to
 	// indicate user had removed the non existed policies from the input.
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"warning",
-		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", assigneeName),
-		readAttachedPolicyNotExistErr,
-		"The policy that will be used to combine policies had been removed on AWS, next apply with update will prompt error:",
-	)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", assigneeName),
-		readAttachedPolicyErr,
-		"",
-	)
+	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 
 	// Set state so that Terraform will trigger update if there are changes in state.
 	setStateDiags = resp.State.Set(ctx, &state)
@@ -377,20 +354,7 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 	// readAttachedPolicy.
 	_, readAssigneeName := assigneeTypeoOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, plan)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readAssigneeName),
-		readAttachedPolicyNotExistErr,
-		"The policy that will be used to combine policies had been removed on AWS:",
-	)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readAssigneeName),
-		readAttachedPolicyErr,
-		"",
-	)
+	addReadCombinedDiags(&resp.Diagnostics, readAssigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -480,20 +444,7 @@ func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteReq
 	// readAttachedPolicy.
 	_, readAssigneeName := assigneeTypeoOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Policy Not Found!", readAssigneeName),
-		readAttachedPolicyNotExistErr,
-		"The policy that will be used to combine policies had been removed on AWS:",
-	)
-	addDiagnostics(
-		&resp.Diagnostics,
-		"error",
-		fmt.Sprintf("[API ERROR] Failed to Read Attached Policies for %v: Unexpected Error!", readAssigneeName),
-		readAttachedPolicyErr,
-		"",
-	)
+	addReadCombinedDiags(&resp.Diagnostics, readAssigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -850,7 +801,6 @@ func (r *iamPolicyV2Resource) checkPoliciesDrift(newState, oriState *iamPolicyV2
 //
 // Parameters:
 //   - state: The recorded state configurations.
-//
 func (r *iamPolicyV2Resource) removePolicy(ctx context.Context, state *iamPolicyV2ResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
 	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
@@ -1090,29 +1040,27 @@ func (r *iamPolicyV2Resource) attachCustomerPoliciesToPermissionSet(ctx context.
 			path = "/"
 		}
 
-		for _, attachCustomerPoliciesToPermissionSetRequest := range policies {
-			input := &awsSsoAdminClient.AttachCustomerManagedPolicyReferenceToPermissionSetInput{
+		for _, policy := range policies {
+			attachCustomerManagedPoliciesReferenceToPermissionSetInputRequest := &awsSsoAdminClient.AttachCustomerManagedPolicyReferenceToPermissionSetInput{
 				InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
 				PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
 				CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
-					Name: aws.String(attachCustomerPoliciesToPermissionSetRequest.PolicyName.ValueString()),
+					Name: aws.String(policy.PolicyName.ValueString()),
 					Path: aws.String(path),
 				},
 			}
 
-			_, err := r.sso.AttachCustomerManagedPolicyReferenceToPermissionSet(ctx, input)
-			if err == nil {
-				continue
+			if _, err := r.sso.AttachCustomerManagedPolicyReferenceToPermissionSet(ctx, attachCustomerManagedPoliciesReferenceToPermissionSetInputRequest); err != nil {
+				return handleAPIError(err)
 			}
-			return handleAPIError(err)
 		}
 
 		return nil
 	}
 
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(attachCustomerPoliciesToPermissionSet, back); err != nil {
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	if err := backoff.Retry(attachCustomerPoliciesToPermissionSet, reconnectBackoff); err != nil {
 		unexpectedError = append(unexpectedError, err)
 	}
 
@@ -1129,25 +1077,26 @@ func (r *iamPolicyV2Resource) attachCustomerPoliciesToPermissionSet(ctx context.
 //
 // Returns:
 //   - err: Error.
+
 func (r *iamPolicyV2Resource) attachAWSManagedPoliciesToPermissionSet(ctx context.Context, state *iamPolicyV2ResourceModel, awsManagedPolicyArns []string) (unexpectedError []error) {
 	attachAWSManagedPoliciesToPermissionSet := func() error {
-		for _, arnStr := range awsManagedPolicyArns {
-			_, err := r.sso.AttachManagedPolicyToPermissionSet(ctx, &awsSsoAdminClient.AttachManagedPolicyToPermissionSetInput{
+		for _, awsManagedPolicyArn := range awsManagedPolicyArns {
+			attachManagedPolicyToPermissionSetInputRequest := &awsSsoAdminClient.AttachManagedPolicyToPermissionSetInput{
 				InstanceArn:      aws.String(state.PermissionSet.InstanceArn.ValueString()),
 				PermissionSetArn: aws.String(state.PermissionSet.PermissionSetArn.ValueString()),
-				ManagedPolicyArn: aws.String(arnStr),
-			})
-			if err == nil {
-				continue
+				ManagedPolicyArn: aws.String(awsManagedPolicyArn),
 			}
-			return handleAPIError(err)
+
+			if _, err := r.sso.AttachManagedPolicyToPermissionSet(ctx, attachManagedPolicyToPermissionSetInputRequest); err != nil {
+				return handleAPIError(err)
+			}
 		}
 		return nil
 	}
 
-	back := backoff.NewExponentialBackOff()
-	back.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(attachAWSManagedPoliciesToPermissionSet, back); err != nil {
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	if err := backoff.Retry(attachAWSManagedPoliciesToPermissionSet, reconnectBackoff); err != nil {
 		unexpectedError = append(unexpectedError, err)
 	}
 	return unexpectedError
@@ -1450,35 +1399,31 @@ func (r *iamPolicyV2Resource) getPolicyArn(ctx context.Context, policyName strin
 	return policyArn, policyVersionId, err
 }
 
-func assigneeTypeoOf(m *iamPolicyV2ResourceModel) (assigneeType string, assigneeName string) {
-	if m == nil {
+func assigneeTypeoOf(assignee *iamPolicyV2ResourceModel) (assigneeType string, assigneeName string) {
+	if assignee == nil {
 		return "", "(unknown-target)"
 	}
-	if m.Role != nil && !m.Role.RoleName.IsNull() && !m.Role.RoleName.IsUnknown() && m.Role.RoleName.ValueString() != "" {
-		return "role", m.Role.RoleName.ValueString()
+	if assignee.Role != nil && !assignee.Role.RoleName.IsNull() && !assignee.Role.RoleName.IsUnknown() && assignee.Role.RoleName.ValueString() != "" {
+		return "role", assignee.Role.RoleName.ValueString()
 	}
-	if m.User != nil && !m.User.UserName.IsNull() && !m.User.UserName.IsUnknown() && m.User.UserName.ValueString() != "" {
-		return "user", m.User.UserName.ValueString()
+	if assignee.User != nil && !assignee.User.UserName.IsNull() && !assignee.User.UserName.IsUnknown() && assignee.User.UserName.ValueString() != "" {
+		return "user", assignee.User.UserName.ValueString()
 	}
-	if m.PermissionSet != nil && !m.PermissionSet.PermissionSetName.IsNull() && !m.PermissionSet.PermissionSetName.IsUnknown() && m.PermissionSet.PermissionSetName.ValueString() != "" {
-		return "permissionSet", m.PermissionSet.PermissionSetName.ValueString()
+	if assignee.PermissionSet != nil && !assignee.PermissionSet.PermissionSetName.IsNull() && !assignee.PermissionSet.PermissionSetName.IsUnknown() && assignee.PermissionSet.PermissionSetName.ValueString() != "" {
+		return "permissionSet", assignee.PermissionSet.PermissionSetName.ValueString()
 	}
 	return "", "(unknown-target)"
 }
 
 func addReadCombinedDiags(diags *diag.Diagnostics, assigneeName string, notFoundErrs, unexpectedErrs []error) {
-	if len(notFoundErrs) > 0 {
-		addDiagnostics(
-			diags, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", assigneeName),
-			notFoundErrs, "",
-		)
-	}
-	if len(unexpectedErrs) > 0 {
-		addDiagnostics(
-			diags, "error",
-			fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", assigneeName),
-			unexpectedErrs, "",
-		)
-	}
+	addDiagnostics(
+		diags, "error",
+		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", assigneeName),
+		notFoundErrs, "",
+	)
+	addDiagnostics(
+		diags, "error",
+		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", assigneeName),
+		unexpectedErrs, "",
+	)
 }
