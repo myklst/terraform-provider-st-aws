@@ -244,7 +244,7 @@ func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateReq
 		PermissionSet:          plan.PermissionSet,
 	}
 
-	assigneeType, assigneeName := assigneeTypeoOf(plan)
+	assigneeType, assigneeName := assigneeTypeOf(plan)
 
 	var attachErrs []error
 	switch assigneeType {
@@ -292,7 +292,7 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	_, assigneeName := assigneeTypeoOf(state)
+	_, assigneeName := assigneeTypeOf(state)
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
 	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
@@ -351,21 +351,21 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	_, assigneeName := assigneeTypeOf(state)
+
 	// readAttachedPolicy.
-	_, readAssigneeName := assigneeTypeoOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, plan)
-	addReadCombinedDiags(&resp.Diagnostics, readAssigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
+	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	// removePolicy.
 	removePolicyErr := r.removePolicy(ctx, state)
-	_, removePolicyName := assigneeTypeoOf(state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
-		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", removePolicyName),
+		fmt.Sprintf("[API ERROR] Failed to Remove Policies for %v: Unexpected Error!", assigneeName),
 		removePolicyErr,
 		"",
 	)
@@ -402,7 +402,7 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 		PermissionSet:          plan.PermissionSet,
 	}
 
-	assigneeType, assigneeName := assigneeTypeoOf(plan)
+	assigneeType, assigneeName := assigneeTypeOf(plan)
 
 	var attachPolicyToUserErr []error
 	switch assigneeType {
@@ -442,7 +442,7 @@ func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 
 	// readAttachedPolicy.
-	_, readAssigneeName := assigneeTypeoOf(state)
+	_, readAssigneeName := assigneeTypeOf(state)
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
 	addReadCombinedDiags(&resp.Diagnostics, readAssigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 	if resp.Diagnostics.HasError() {
@@ -451,7 +451,7 @@ func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteReq
 
 	// removePolicy.
 	removePolicyErr := r.removePolicy(ctx, state)
-	_, removePolicyName := assigneeTypeoOf(state)
+	_, removePolicyName := assigneeTypeOf(state)
 	addDiagnostics(
 		&resp.Diagnostics,
 		"error",
@@ -484,7 +484,7 @@ func (r *iamPolicyV2Resource) createPolicy(ctx context.Context, plan *iamPolicyV
 		return nil, nil, errList
 	}
 
-	assigneeType, prefix := assigneeTypeoOf(plan)
+	assigneeType, prefix := assigneeTypeOf(plan)
 	pathPtr := (*string)(nil)
 	usePath := false
 
@@ -1399,7 +1399,7 @@ func (r *iamPolicyV2Resource) getPolicyArn(ctx context.Context, policyName strin
 	return policyArn, policyVersionId, err
 }
 
-func assigneeTypeoOf(assignee *iamPolicyV2ResourceModel) (assigneeType string, assigneeName string) {
+func assigneeTypeOf(assignee *iamPolicyV2ResourceModel) (assigneeType string, assigneeName string) {
 	if assignee == nil {
 		return "", "(unknown-target)"
 	}
