@@ -6,6 +6,8 @@ description: |-
   Provides a IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like ReadOnlyAccess that exceed the maximum length of a policy, they will be attached directly to the user.
 ---
 
+-> **WARNING:** This resource `st-aws_iam_policy` is deprecated, moved to `st-aws_iam_policy_v2`.
+
 # st-aws_iam_policy (Resource)
 
 Provides a IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy attached to the user. However, the policy like `ReadOnlyAccess` that exceed the maximum length of a policy, they will be attached directly to the user.
@@ -14,8 +16,12 @@ Provides a IAM Policy resource that manages policy content exceeding character l
 
 ```terraform
 resource "st-aws_iam_policy" "iam_policy" {
-  user_name         = "devopsuser01"
-  attached_policies = ["IAMFullAccess", "PowerUserAccess", "AWSSupportAccess", ]
+  user_name = "devopsuser01"
+  attached_policies = [
+    "IAMFullAccess",
+    "PowerUserAccess",
+    "AWSSupportAccess",
+  ]
 }
 ```
 
@@ -58,5 +64,3 @@ Read-Only:
 
 - `policy_document` (String) The policy document of the IAM policy.
 - `policy_name` (String) The policy name.
-
-

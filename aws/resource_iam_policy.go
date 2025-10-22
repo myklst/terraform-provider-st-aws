@@ -11,9 +11,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsIamClient "github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/smithy-go"
 	"github.com/cenkalti/backoff"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -128,7 +128,12 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 	}
 }
 
-func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
+func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	resp.Diagnostics.AddWarning(
+		"⚠️ Deprecated Resource",
+		"The resource `st-aws_iam_policy` is deprecated, moved to `st-aws_iam_policy_v2`.",
+	)
+
 	if req.ProviderData == nil {
 		return
 	}
@@ -851,7 +856,6 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 	removePolicy := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
 			policyArn, _, err := r.getPolicyArn(ctx, combinedPolicy.PolicyName.ValueString())
-
 			if err != nil {
 				unexpectedError = append(unexpectedError, err)
 				continue
@@ -862,14 +866,6 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				UserName:  aws.String(state.UserName.ValueString()),
 			}
 
-			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
-				PolicyArn: aws.String(policyArn),
-			}
-
-			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
-				PolicyArn: aws.String(policyArn),
-			}
-
 			if _, err = r.client.DetachUserPolicy(ctx, detachPolicyFromUserRequest); err != nil {
 				// Ignore error where the policy is not attached
 				// to the user as it is intented to detach the
@@ -877,6 +873,25 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
 					return handleAPIError(err)
 				}
+			}
+
+			// To differentiate AWS managed policies vs customer managed policies.
+			a, err := arn.Parse(policyArn)
+			if err != nil {
+				continue
+			}
+
+			// The arn difference between AWS managed policy and customer managed policies:
+			// AWS managed policy: arn:aws:iam::*aws*:policy/XxxxXxxxx
+			// Customer managed policy: arn:aws:iam::*xxxxxxxxxxxx*:policy/xxxx-xxx-xxxx-xxxx-xxx-xx
+			// See http://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html for more information.
+			// To differentiate is the ** part, the part is AccountID field.
+			if a.AccountID == "aws" {
+				continue
+			}
+
+			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
+				PolicyArn: aws.String(policyArn),
 			}
 
 			// An IAM policy versions must be removed before deleting
@@ -913,6 +928,10 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 
+			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
+				PolicyArn: aws.String(policyArn),
+			}
+
 			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
 				// Ignore error where the policy had been deleted
 				// as it is intended to delete the IAM policy.
@@ -921,7 +940,6 @@ func (r *iamPolicyResource) removePolicy(ctx context.Context, state *iamPolicyRe
 				}
 			}
 		}
-
 		return nil
 	}
 
@@ -999,50 +1017,4 @@ func (r *iamPolicyResource) getPolicyArn(ctx context.Context, policyName string)
 	}
 
 	return policyArn, policyVersionId, err
-}
-
-func handleAPIError(err error) error {
-	var ae smithy.APIError
-
-	if errors.As(err, &ae) {
-		if isAbleToRetry(ae.ErrorCode()) {
-			return err
-		} else {
-			return backoff.Permanent(err)
-		}
-	} else {
-		return backoff.Permanent(err)
-	}
-}
-
-func addDiagnostics(diags *diag.Diagnostics, severity string, title string, errors []error, extraMessage string) {
-	var combinedMessages string
-	validErrors := 0
-
-	for _, err := range errors {
-		if err != nil {
-			combinedMessages += fmt.Sprintf("%v\n", err)
-			validErrors++
-		}
-	}
-
-	if validErrors == 0 {
-		return
-	}
-
-	var message string
-	if extraMessage != "" {
-		message = fmt.Sprintf("%s\n%s", extraMessage, combinedMessages)
-	} else {
-		message = combinedMessages
-	}
-
-	switch severity {
-	case "warning":
-		diags.AddWarning(title, message)
-	case "error":
-		diags.AddError(title, message)
-	default:
-		// Handle unknown severity if needed
-	}
 }

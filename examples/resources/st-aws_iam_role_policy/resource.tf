@@ -1,5 +1,5 @@
-resource "st-aws_iam_policy" "iam_policy" {
-  user_name = "devopsuser01"
+resource "st-aws_iam_role_policy" "iam_role_policy" {
+  role_name = "test_role"
   attached_policies = [
     "IAMFullAccess",
     "PowerUserAccess",
