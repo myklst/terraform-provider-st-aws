@@ -20,13 +20,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-const (
-	// Number of 30 indicates the character length of neccessary policy keyword
-	// such as "Version" and "Statement" and some JSON symbols ({}, []).
-	policyKeywordLength = 30
-	policyMaxLength     = 6144
-)
-
 var (
 	_ resource.Resource              = &iamPolicyResource{}
 	_ resource.ResourceWithConfigure = &iamPolicyResource{}
