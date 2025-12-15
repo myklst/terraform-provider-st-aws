@@ -48,3 +48,17 @@ resource "st-aws_iam_policy_v2" "User" {
     "ReadOnlyAccess",
   ]
 }
+
+####################################
+# Create Policy Only
+####################################
+resource "st-aws_iam_policy_v2" "Create_Policy_Only" {
+  policy_name = "test"
+
+  attached_policies = [
+    "AWSSupportAccess",
+    "PowerUserAccess",
+    "AWSBillingReadOnlyAccess",
+    "ReadOnlyAccess",
+  ]
+}
