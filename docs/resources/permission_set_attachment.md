@@ -10,6 +10,8 @@ description: |-
 
 Provides an IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy and attached to the chosen target. Policies like `ReadOnlyAccess` that exceed the maximum length are attached directly.
 
+~> **NOTE:** The usage of this resource conflicts with the `st-aws_iam_policy_v2` resource and will permanently show a difference if both are defined.
+
 ## Example Usage
 
 ```terraform
@@ -62,5 +64,3 @@ Read-Only:
 
 - `policy_document` (String) The policy document of the IAM policy.
 - `policy_name` (String) The policy name.
-
-
