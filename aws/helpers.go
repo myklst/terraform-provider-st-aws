@@ -47,7 +47,7 @@ func (p *policyV2Detail) GetName() string {
 	return p.PolicyName.ValueString()
 }
 
-func (p *permissionSetPolicyDetail) GetName() string {
+func (p *iamPermissionSetPolicyDetail) GetName() string {
 	return p.PolicyName.ValueString()
 }
 

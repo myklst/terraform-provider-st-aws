@@ -25,39 +25,39 @@ const (
 )
 
 var (
-	_ resource.Resource              = &permissionSetAttachmentResource{}
-	_ resource.ResourceWithConfigure = &permissionSetAttachmentResource{}
+	_ resource.Resource              = &iamPermissionSetAttachmentResource{}
+	_ resource.ResourceWithConfigure = &iamPermissionSetAttachmentResource{}
 )
 
-func NewPermissionSetAttachmentResource() resource.Resource {
-	return &permissionSetAttachmentResource{}
+func NewIamPermissionSetAttachmentResource() resource.Resource {
+	return &iamPermissionSetAttachmentResource{}
 }
 
-type permissionSetAttachmentResource struct {
+type iamPermissionSetAttachmentResource struct {
 	client *awsIamClient.Client
 	sso    *awsSsoAdminClient.Client
 }
 
-type permissionSetAttachmentResourceModel struct {
+type iamPermissionSetAttachmentResourceModel struct {
 	PermissionSetName      types.String                 `tfsdk:"permission_set_name"`
 	InstanceArn            types.String                 `tfsdk:"instance_arn"`
 	PermissionSetArn       types.String                 `tfsdk:"permission_set_arn"`
 	PolicyPath             types.String                 `tfsdk:"policy_path"`
 	AttachedPolicies       types.List                   `tfsdk:"attached_policies"`
-	AttachedPoliciesDetail []*permissionSetPolicyDetail `tfsdk:"attached_policies_detail"`
-	CombinedPolicesDetail  []*permissionSetPolicyDetail `tfsdk:"combined_policies_detail"`
+	AttachedPoliciesDetail []*iamPermissionSetPolicyDetail `tfsdk:"attached_policies_detail"`
+	CombinedPolicesDetail  []*iamPermissionSetPolicyDetail `tfsdk:"combined_policies_detail"`
 }
 
-type permissionSetPolicyDetail struct {
+type iamPermissionSetPolicyDetail struct {
 	PolicyName     types.String `tfsdk:"policy_name"`
 	PolicyDocument types.String `tfsdk:"policy_document"`
 }
 
-func (r *permissionSetAttachmentResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_permission_set_attachment"
+func (r *iamPermissionSetAttachmentResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "iam_permission_set_attachment"
 }
 
-func (r *permissionSetAttachmentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *iamPermissionSetAttachmentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Provides an IAM Policy resource that manages policy content " +
 			"exceeding character limits by splitting it into smaller segments. " +
@@ -122,7 +122,7 @@ func (r *permissionSetAttachmentResource) Schema(_ context.Context, _ resource.S
 	}
 }
 
-func (r *permissionSetAttachmentResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
+func (r *iamPermissionSetAttachmentResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
@@ -130,14 +130,14 @@ func (r *permissionSetAttachmentResource) Configure(_ context.Context, req resou
 	r.sso = req.ProviderData.(awsClients).ssoAdminClient
 }
 
-func (r *permissionSetAttachmentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+func (r *iamPermissionSetAttachmentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	// If the entire plan is null, the resource is planned for destruction.
 	if req.Config.Raw.IsNull() {
 		fmt.Println("Plan is null; skipping ModifyPlan.")
 		return
 	}
 
-	var plan *permissionSetAttachmentResourceModel
+	var plan *iamPermissionSetAttachmentResourceModel
 	if diags := req.Config.Get(ctx, &plan); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 		return
@@ -150,8 +150,8 @@ func (r *permissionSetAttachmentResource) ModifyPlan(ctx context.Context, req re
 
 }
 
-func (r *permissionSetAttachmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan *permissionSetAttachmentResourceModel
+func (r *iamPermissionSetAttachmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan *iamPermissionSetAttachmentResourceModel
 	getPlanDiags := req.Config.Get(ctx, &plan)
 	resp.Diagnostics.Append(getPlanDiags...)
 	if resp.Diagnostics.HasError() {
@@ -168,8 +168,8 @@ func (r *permissionSetAttachmentResource) Create(ctx context.Context, req resour
 			// Call the reusable helper with the struct's client
 			return getPolicyArnHelper(ctx, r.client, policyName)
 		},
-		func(name, doc string) *permissionSetPolicyDetail {
-			return &permissionSetPolicyDetail{
+		func(name, doc string) *iamPermissionSetPolicyDetail {
+			return &iamPermissionSetPolicyDetail{
 				PolicyName:     types.StringValue(name),
 				PolicyDocument: types.StringValue(doc),
 			}
@@ -214,16 +214,16 @@ func (r *permissionSetAttachmentResource) Create(ctx context.Context, req resour
 		return
 	}
 
-	excludedPolicies := make([]*permissionSetPolicyDetail, len(excludedPoliciesInterface))
+	excludedPolicies := make([]*iamPermissionSetPolicyDetail, len(excludedPoliciesInterface))
 	for i, p := range excludedPoliciesInterface {
-		excludedPolicies[i] = p.(*permissionSetPolicyDetail)
+		excludedPolicies[i] = p.(*iamPermissionSetPolicyDetail)
 	}
 
-	var combinedPolicies []*permissionSetPolicyDetail
+	var combinedPolicies []*iamPermissionSetPolicyDetail
 	prefix := plan.PermissionSetName.ValueString()
 	for i, doc := range combinedPolicyDocs {
 		policyName := fmt.Sprintf("%s-%d", prefix, i+1)
-		combinedPolicies = append(combinedPolicies, &permissionSetPolicyDetail{
+		combinedPolicies = append(combinedPolicies, &iamPermissionSetPolicyDetail{
 			PolicyName:     types.StringValue(policyName),
 			PolicyDocument: types.StringValue(doc),
 		})
@@ -231,7 +231,7 @@ func (r *permissionSetAttachmentResource) Create(ctx context.Context, req resour
 
 	combinedPolicies = append(combinedPolicies, excludedPolicies...)
 
-	state := &permissionSetAttachmentResourceModel{
+	state := &iamPermissionSetAttachmentResourceModel{
 		PermissionSetName:      plan.PermissionSetName,
 		InstanceArn:            plan.InstanceArn,
 		PermissionSetArn:       plan.PermissionSetArn,
@@ -267,8 +267,8 @@ func (r *permissionSetAttachmentResource) Create(ctx context.Context, req resour
 	resp.Diagnostics.Append(setStateDiags...)
 }
 
-func (r *permissionSetAttachmentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state *permissionSetAttachmentResourceModel
+func (r *iamPermissionSetAttachmentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state *iamPermissionSetAttachmentResourceModel
 	getStateDiags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(getStateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -276,7 +276,7 @@ func (r *permissionSetAttachmentResource) Read(ctx context.Context, req resource
 	}
 
 	// This state will be using to compare with the current state.
-	var oriState *permissionSetAttachmentResourceModel
+	var oriState *iamPermissionSetAttachmentResourceModel
 	getOriStateDiags := req.State.Get(ctx, &oriState)
 	resp.Diagnostics.Append(getOriStateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -301,8 +301,8 @@ func (r *permissionSetAttachmentResource) Read(ctx context.Context, req resource
 	}
 }
 
-func (r *permissionSetAttachmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state *permissionSetAttachmentResourceModel
+func (r *iamPermissionSetAttachmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state *iamPermissionSetAttachmentResourceModel
 	getPlanDiags := req.Config.Get(ctx, &plan)
 	resp.Diagnostics.Append(getPlanDiags...)
 	if resp.Diagnostics.HasError() {
@@ -343,8 +343,8 @@ func (r *permissionSetAttachmentResource) Update(ctx context.Context, req resour
 		func(ctx context.Context, policyName string) (string, string, error) {
 			return getPolicyArnHelper(ctx, r.client, policyName)
 		},
-		func(name, doc string) *permissionSetPolicyDetail {
-			return &permissionSetPolicyDetail{
+		func(name, doc string) *iamPermissionSetPolicyDetail {
+			return &iamPermissionSetPolicyDetail{
 				PolicyName:     types.StringValue(name),
 				PolicyDocument: types.StringValue(doc),
 			}
@@ -389,16 +389,16 @@ func (r *permissionSetAttachmentResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	excludedPolicies := make([]*permissionSetPolicyDetail, len(excludedPoliciesInterface))
+	excludedPolicies := make([]*iamPermissionSetPolicyDetail, len(excludedPoliciesInterface))
 	for i, p := range excludedPoliciesInterface {
-		excludedPolicies[i] = p.(*permissionSetPolicyDetail)
+		excludedPolicies[i] = p.(*iamPermissionSetPolicyDetail)
 	}
 
-	var combinedPolicies []*permissionSetPolicyDetail
+	var combinedPolicies []*iamPermissionSetPolicyDetail
 	prefix := plan.PermissionSetName.ValueString()
 	for i, doc := range combinedPolicyDocs {
 		policyName := fmt.Sprintf("%s-%d", prefix, i+1)
-		combinedPolicies = append(combinedPolicies, &permissionSetPolicyDetail{
+		combinedPolicies = append(combinedPolicies, &iamPermissionSetPolicyDetail{
 			PolicyName:     types.StringValue(policyName),
 			PolicyDocument: types.StringValue(doc),
 		})
@@ -406,7 +406,7 @@ func (r *permissionSetAttachmentResource) Update(ctx context.Context, req resour
 
 	combinedPolicies = append(combinedPolicies, excludedPolicies...)
 
-	state = &permissionSetAttachmentResourceModel{
+	state = &iamPermissionSetAttachmentResourceModel{
 		PermissionSetName:      plan.PermissionSetName,
 		InstanceArn:            plan.InstanceArn,
 		PermissionSetArn:       plan.PermissionSetArn,
@@ -439,8 +439,8 @@ func (r *permissionSetAttachmentResource) Update(ctx context.Context, req resour
 	}
 }
 
-func (r *permissionSetAttachmentResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state *permissionSetAttachmentResourceModel
+func (r *iamPermissionSetAttachmentResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state *iamPermissionSetAttachmentResourceModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -461,11 +461,11 @@ func (r *permissionSetAttachmentResource) Delete(ctx context.Context, req resour
 	}
 }
 
-// removePolicy will detach and delete the combined policies from user.
+// removePolicy will detach the combined policies from user.
 //
 // Parameters:
 //   - state: The recorded state configurations.
-func (r *permissionSetAttachmentResource) removePolicy(ctx context.Context, state *permissionSetAttachmentResourceModel) (unexpectedError []error) {
+func (r *iamPermissionSetAttachmentResource) removePolicy(ctx context.Context, state *iamPermissionSetAttachmentResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
 
 	removePolicy := func() error {
@@ -535,7 +535,7 @@ func (r *permissionSetAttachmentResource) removePolicy(ctx context.Context, stat
 	return nil
 }
 
-func (s *permissionSetAttachmentResourceModel) GetAttachedPoliciesDetail() []*policyV2Detail {
+func (s *iamPermissionSetAttachmentResourceModel) GetAttachedPoliciesDetail() []*policyV2Detail {
 	res := make([]*policyV2Detail, len(s.AttachedPoliciesDetail))
 	for i, p := range s.AttachedPoliciesDetail {
 		res[i] = &policyV2Detail{
@@ -546,13 +546,13 @@ func (s *permissionSetAttachmentResourceModel) GetAttachedPoliciesDetail() []*po
 	return res
 }
 
-func (s *permissionSetAttachmentResourceModel) SetAttachedPoliciesToNull() {
+func (s *iamPermissionSetAttachmentResourceModel) SetAttachedPoliciesToNull() {
 	s.AttachedPolicies = types.ListNull(types.StringType)
 }
 
-func (p *permissionSetPolicyDetail) GetPolicyName() string {
+func (p *iamPermissionSetPolicyDetail) GetPolicyName() string {
 	return p.PolicyName.String()
 }
-func (p *permissionSetPolicyDetail) GetPolicyDocument() string {
+func (p *iamPermissionSetPolicyDetail) GetPolicyDocument() string {
 	return p.PolicyDocument.ValueString()
 }

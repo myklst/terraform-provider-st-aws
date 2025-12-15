@@ -245,6 +245,6 @@ func (p *awsServicesProvider) Resources(_ context.Context) []func() resource.Res
 		NewRoute53Resource,
 		NewIamPolicyResource,
 		NewIamPolicyV2Resource,
-		NewPermissionSetAttachmentResource,
+		NewIamPermissionSetAttachmentResource,
 	}
 }
