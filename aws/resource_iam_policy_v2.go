@@ -73,7 +73,8 @@ func (r *iamPolicyV2Resource) Schema(_ context.Context, _ resource.SchemaRequest
 	resp.Schema = schema.Schema{
 		Description: "Provides an IAM Policy resource that manages policy content " +
 			"exceeding character limits by splitting it into smaller segments. " +
-			"These segments are combined to form a complete policy and attached to the chosen target. " +
+			"These segments are combined to form a complete policy and can " +
+			"be attached to a specified target if provided. " +
 			"Policies like `ReadOnlyAccess` that exceed the maximum length are attached directly.",
 		Attributes: map[string]schema.Attribute{
 			"policy_name": schema.StringAttribute{

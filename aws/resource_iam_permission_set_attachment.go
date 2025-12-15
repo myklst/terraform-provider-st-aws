@@ -467,7 +467,6 @@ func (r *permissionSetAttachmentResource) Delete(ctx context.Context, req resour
 //   - state: The recorded state configurations.
 func (r *permissionSetAttachmentResource) removePolicy(ctx context.Context, state *permissionSetAttachmentResourceModel) (unexpectedError []error) {
 	var ae smithy.APIError
-	var listPolicyVersionsResponse *awsIamClient.ListPolicyVersionsOutput
 
 	removePolicy := func() error {
 		for _, combinedPolicy := range state.CombinedPolicesDetail {
@@ -521,70 +520,6 @@ func (r *permissionSetAttachmentResource) removePolicy(ctx context.Context, stat
 
 			if ok, errs := provisionPermissionSetAllWaitHelper(ctx, r.sso, state.InstanceArn.ValueString(), state.PermissionSetArn.ValueString(), 10*time.Minute); !ok {
 				return fmt.Errorf("[API ERROR] Provisioning did not complete: %w", errors.Join(errs...))
-			}
-
-			a, err = arn.Parse(policyArn)
-			if err != nil {
-				continue
-			}
-
-			// The arn difference between AWS managed policy and customer managed policies:
-			// AWS managed policy: arn:aws:iam::*aws*:policy/XxxxXxxxx
-			// Customer managed policy: arn:aws:iam::*xxxxxxxxxxxx*:policy/xxxx-xxx-xxxx-xxxx-xxx-xx
-			// See http://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html for more information.
-			// To differentiate is the ** part, the part is AccountID field.
-			if a.AccountID == "aws" {
-				continue
-			}
-
-			listPolicyVersionsRequest := &awsIamClient.ListPolicyVersionsInput{
-				PolicyArn: aws.String(policyArn),
-			}
-
-			// An IAM policy versions must be removed before deleting
-			// the policy. Refer to the below offcial IAM documents:
-			// https://docs.aws.amazon.com/IAM/latest/APIReference/API_DeletePolicy.html
-			if listPolicyVersionsResponse, err = r.client.ListPolicyVersions(ctx, listPolicyVersionsRequest); err != nil {
-				if errors.As(err, &ae) {
-					// Ignore error where the policy version does
-					// not exists in the policy as it was intended
-					// to delete the policy version.
-					if ae.ErrorCode() != "NoSuchEntity" {
-						return handleAPIError(err)
-					}
-				}
-			}
-
-			for _, policyVersion := range listPolicyVersionsResponse.Versions {
-				// Default version could not be deleted.
-				if policyVersion.IsDefaultVersion {
-					continue
-				}
-				deletePolicyVersionRequest := &awsIamClient.DeletePolicyVersionInput{
-					PolicyArn: aws.String(policyArn),
-					VersionId: aws.String(*policyVersion.VersionId),
-				}
-
-				if _, err = r.client.DeletePolicyVersion(ctx, deletePolicyVersionRequest); err != nil {
-					// Ignore error where the policy version does
-					// not exists in the policy as it was intended
-					// to delete the policy version.
-					if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
-						return handleAPIError(err)
-					}
-				}
-			}
-
-			deletePolicyRequest := &awsIamClient.DeletePolicyInput{
-				PolicyArn: aws.String(policyArn),
-			}
-
-			if _, err = r.client.DeletePolicy(ctx, deletePolicyRequest); err != nil {
-				// Ignore error where the policy had been deleted
-				// as it is intended to delete the IAM policy.
-				if errors.As(err, &ae) && ae.ErrorCode() != "NoSuchEntity" {
-					return handleAPIError(err)
-				}
 			}
 		}
 		return nil
