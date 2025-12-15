@@ -54,7 +54,7 @@ type iamPermissionSetPolicyDetail struct {
 }
 
 func (r *iamPermissionSetAttachmentResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "iam_permission_set_attachment"
+	resp.TypeName = req.ProviderTypeName + "_iam_permission_set_attachment"
 }
 
 func (r *iamPermissionSetAttachmentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {

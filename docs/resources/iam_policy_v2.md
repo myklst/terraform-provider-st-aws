@@ -10,7 +10,7 @@ description: |-
 
 Provides an IAM Policy resource that manages policy content exceeding character limits by splitting it into smaller segments. These segments are combined to form a complete policy and can be attached to a specified target if provided. Policies like `ReadOnlyAccess` that exceed the maximum length are attached directly.
 
-~> **NOTE:** This resource conflicts with `st-aws_permission_set_attachment` resource when the `permission_set`, `user`, or `role` parameters are set in this resource.
+~> **NOTE:** This resource conflicts with `st-aws_iam_permission_set_attachment` resource when the `permission_set`, `user`, or `role` parameters are set in this resource.
 
 ## Example Usage
 
