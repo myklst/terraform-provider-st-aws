@@ -1015,6 +1015,7 @@ func (s *iamPolicyV2ResourceModel) SetAttachedPoliciesToNull() {
 func (p *policyV2Detail) GetPolicyName() string {
 	return p.PolicyName.String()
 }
+
 func (p *policyV2Detail) GetPolicyDocument() string {
 	return p.PolicyDocument.ValueString()
 }
