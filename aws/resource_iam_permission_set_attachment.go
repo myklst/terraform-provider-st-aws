@@ -250,6 +250,12 @@ func (r *iamPermissionSetAttachmentResource) removePolicy(ctx context.Context, s
 		return
 	}
 
+	// If the policy ARN cannot be retrieved (e.g., because the policy is
+	// in another AWS account), the code proceeds to detach customer-managed
+	// policies. If the ARN can be retrieved, the code checks whether the
+	// policy is AWS-managed or customer-managed before detaching. This ensures
+	// that cross-account policies are safely detached while same-account
+	// policies are correctly classified.
 	removePolicy := func() error {
 		instanceArn := state.InstanceArn.ValueString()
 		permissionSetArn := state.PermissionSetArn.ValueString()
