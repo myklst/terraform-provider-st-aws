@@ -16,6 +16,8 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -80,6 +82,9 @@ func (r *iamPermissionSetAttachmentResource) Schema(_ context.Context, _ resourc
 				Description: "List of IAM policy.",
 				ElementType: types.StringType,
 				Required:    true,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
 			},
 		},
 	}
@@ -261,13 +266,53 @@ func (r *iamPermissionSetAttachmentResource) removePolicy(ctx context.Context, s
 		permissionSetArn := state.PermissionSetArn.ValueString()
 
 		changed := false
-		detachCustomerManagedPolocies := false
+
+		path := state.PolicyPath.ValueString()
+		if path == "" {
+			path = "/"
+		}
+
+		detachCustomerManagedPolicyFromPermissionSet := func(policyName string) error {
+			_, err := r.sso.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx,
+				&awsSsoAdminClient.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
+					InstanceArn:      aws.String(instanceArn),
+					PermissionSetArn: aws.String(permissionSetArn),
+					CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
+						Name: aws.String(policyName),
+						Path: aws.String(path),
+					},
+				})
+
+			if err == nil {
+				changed = true
+				return nil
+			}
+
+			if errors.As(err, &ae) {
+				switch ae.ErrorCode() {
+				case "ResourceNotFoundException", "ConflictException":
+					return nil
+				case "ThrottlingException", "TooManyRequestsException":
+					return err
+				}
+			}
+
+			unexpectedError = append(unexpectedError, handleAPIError(err))
+			return nil
+		}
 
 		for _, policyName := range policyNames {
 			policyArn, _, err := getPolicyArnHelper(ctx, r.client, policyName)
 			if err != nil {
-				detachCustomerManagedPolocies = true
-				continue
+				// If the error message is 'Policy xxx not found' the process proceeds to detach the
+				// customer-managed policy. For any other error, the process exits and displays the error message.
+				if strings.Contains(err.Error(), "not found") {
+					if err := detachCustomerManagedPolicyFromPermissionSet(policyName); err != nil {
+						return err
+					}
+					continue
+				}
+				return fmt.Errorf("failed to get policy ARN for %s: %w", policyName, err)
 			}
 
 			a, err := arn.Parse(policyArn)
@@ -275,12 +320,15 @@ func (r *iamPermissionSetAttachmentResource) removePolicy(ctx context.Context, s
 				return fmt.Errorf("invalid policy ARN %q: %w", policyArn, err)
 			}
 
+			// Customer-managed policy
 			if a.AccountID != "aws" {
-				detachCustomerManagedPolocies = true
+				if err := detachCustomerManagedPolicyFromPermissionSet(policyName); err != nil {
+					return err
+				}
 				continue
 			}
 
-			// AWS-managed policy detach
+			// AWS-managed policy
 			if _, err := r.sso.DetachManagedPolicyFromPermissionSet(ctx, &awsSsoAdminClient.DetachManagedPolicyFromPermissionSetInput{
 				InstanceArn:      aws.String(instanceArn),
 				PermissionSetArn: aws.String(permissionSetArn),
@@ -294,17 +342,6 @@ func (r *iamPermissionSetAttachmentResource) removePolicy(ctx context.Context, s
 				} else {
 					return handleAPIError(err)
 				}
-			}
-
-			changed = true
-		}
-
-		// Detach customer-managed policies
-		if detachCustomerManagedPolocies {
-			if detErr := errors.Join(
-				r.detachCustomerPoliciesFromPermissionSet(ctx, state)...,
-			); detErr != nil {
-				return fmt.Errorf("[API ERROR] Failed to detach customer-managed policies from Permission Set: %w", detErr)
 			}
 
 			changed = true
@@ -479,115 +516,6 @@ func (r *iamPermissionSetAttachmentResource) attachPolicyToPermissionSet(ctx con
 	}
 
 	return unexpectedErrs
-}
-
-// detachCustomerPoliciesFromPermissionSet detaches the specified customer-managed policy
-// references from a Permission Set and waits until each (Name, Path) reference disappears.
-//
-// Parameters
-//   - ctx: request context (cancellation/deadline honored by retries)
-//   - state: model containing Permission Set identifiers and the target policy names in CombinedPolicesDetail.
-//
-// Returns
-//   - err: Error.
-func (r *iamPermissionSetAttachmentResource) detachCustomerPoliciesFromPermissionSet(ctx context.Context, state *iamPermissionSetAttachmentResourceModel) (unexpectedError []error) {
-	// To ensure the policy has been fully detach, keep on polls the `ListCustomerManagedPolicyReferencesInPermissionSet`
-	// until the (Name, Path) reference disappears.
-	waitDetachCustomerPoliciesFromPermissionSet := func(name, path string, maxWait time.Duration) error {
-		if strings.TrimSpace(path) == "" {
-			path = "/"
-		}
-		listCustomerManagedPolicyReferencesInPermissionSetRequest := func() error {
-			listCustomerManagedPolicyReferencesInPermissionSet, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
-				&awsSsoAdminClient.ListCustomerManagedPolicyReferencesInPermissionSetInput{
-					InstanceArn:      aws.String(state.InstanceArn.ValueString()),
-					PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
-				})
-			if err != nil {
-				var ae smithy.APIError
-				if errors.As(err, &ae) && (ae.ErrorCode() == "NoSuchEntity" || ae.ErrorCode() == "ResourceNotFoundException") {
-					return nil
-				}
-				return err
-			}
-			for _, reference := range listCustomerManagedPolicyReferencesInPermissionSet.CustomerManagedPolicyReferences {
-				referenceName := aws.ToString(reference.Name)
-				referencePath := aws.ToString(reference.Path)
-				if strings.TrimSpace(referencePath) == "" {
-					referencePath = "/"
-				}
-				if referenceName == name && referencePath == path {
-					return fmt.Errorf("policy %s still referenced (path %s)", name, path)
-				}
-			}
-			return nil
-		}
-		waitBackoff := backoff.NewExponentialBackOff()
-		waitBackoff.MaxElapsedTime = maxWait
-		return backoff.Retry(listCustomerManagedPolicyReferencesInPermissionSetRequest, backoff.WithContext(waitBackoff, ctx))
-	}
-
-	listAndDetachCustomerPoliciesFromPermissionSet := func() error {
-		var ae smithy.APIError
-
-		listCustomerManagedPolicyReferencesInPermissionSetRequest, err := r.sso.ListCustomerManagedPolicyReferencesInPermissionSet(ctx,
-			&awsSsoAdminClient.ListCustomerManagedPolicyReferencesInPermissionSetInput{
-				InstanceArn:      aws.String(state.InstanceArn.ValueString()),
-				PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
-			})
-		if err != nil {
-			if errors.As(err, &ae) && (ae.ErrorCode() == "ThrottlingException" || ae.ErrorCode() == "TooManyRequestsException") {
-				return err
-			}
-			return handleAPIError(err)
-		}
-
-		for _, ref := range listCustomerManagedPolicyReferencesInPermissionSetRequest.CustomerManagedPolicyReferences {
-			if ref.Name == nil {
-				continue
-			}
-			referenceName := aws.ToString(ref.Name)
-			actualPath := aws.ToString(ref.Path)
-			if strings.TrimSpace(actualPath) == "" {
-				actualPath = "/"
-			}
-
-			_, err := r.sso.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx,
-				&awsSsoAdminClient.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
-					InstanceArn:      aws.String(state.InstanceArn.ValueString()),
-					PermissionSetArn: aws.String(state.PermissionSetArn.ValueString()),
-					CustomerManagedPolicyReference: &ssoTypes.CustomerManagedPolicyReference{
-						Name: aws.String(referenceName),
-						Path: aws.String(actualPath),
-					},
-				})
-			if err != nil {
-				if errors.As(err, &ae) {
-					switch ae.ErrorCode() {
-					case "ResourceNotFoundException", "ConflictException":
-						continue
-					case "ThrottlingException", "TooManyRequestsException":
-						return err
-					}
-				}
-				unexpectedError = append(unexpectedError, handleAPIError(err))
-				continue
-			}
-
-			// After a successful detach, wait until the reference is actually gone.
-			if waitErr := waitDetachCustomerPoliciesFromPermissionSet(referenceName, actualPath, 90*time.Second); waitErr != nil {
-				unexpectedError = append(unexpectedError, waitErr)
-			}
-		}
-		return nil
-	}
-
-	waitBackoff := backoff.NewExponentialBackOff()
-	waitBackoff.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(listAndDetachCustomerPoliciesFromPermissionSet, backoff.WithContext(waitBackoff, ctx)); err != nil {
-		unexpectedError = append(unexpectedError, err)
-	}
-	return unexpectedError
 }
 
 // provisionPermissionSetAllWait triggers provisioning of the Permission Set to all
