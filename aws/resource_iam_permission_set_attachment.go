@@ -251,52 +251,66 @@ func (r *iamPermissionSetAttachmentResource) removePolicy(ctx context.Context, s
 	}
 
 	removePolicy := func() error {
+		instanceArn := state.InstanceArn.ValueString()
+		permissionSetArn := state.PermissionSetArn.ValueString()
+
+		changed := false
+		detachCustomerManagedPolocies := false
+
 		for _, policyName := range policyNames {
 			policyArn, _, err := getPolicyArnHelper(ctx, r.client, policyName)
 			if err != nil {
-				unexpectedError = append(unexpectedError, err)
+				detachCustomerManagedPolocies = true
 				continue
 			}
-
-			instanceArn := state.InstanceArn.ValueString()
-			psArn := state.PermissionSetArn.ValueString()
 
 			a, err := arn.Parse(policyArn)
 			if err != nil {
+				return fmt.Errorf("invalid policy ARN %q: %w", policyArn, err)
+			}
+
+			if a.AccountID != "aws" {
+				detachCustomerManagedPolocies = true
 				continue
 			}
 
-			if a.AccountID == "aws" {
-				if _, err := r.sso.DetachManagedPolicyFromPermissionSet(ctx, &awsSsoAdminClient.DetachManagedPolicyFromPermissionSetInput{
-					InstanceArn:      aws.String(instanceArn),
-					PermissionSetArn: aws.String(psArn),
-					ManagedPolicyArn: aws.String(policyArn),
-				}); err != nil {
-					if errors.As(err, &ae) {
-						if ae.ErrorCode() == "ResourceNotFoundException" || ae.ErrorCode() == "ValidationException" {
-						} else {
-							return handleAPIError(err)
-						}
+			// AWS-managed policy detach
+			if _, err := r.sso.DetachManagedPolicyFromPermissionSet(ctx, &awsSsoAdminClient.DetachManagedPolicyFromPermissionSetInput{
+				InstanceArn:      aws.String(instanceArn),
+				PermissionSetArn: aws.String(permissionSetArn),
+				ManagedPolicyArn: aws.String(policyArn),
+			}); err != nil {
+				if errors.As(err, &ae) {
+					if ae.ErrorCode() == "ResourceNotFoundException" || ae.ErrorCode() == "ValidationException" {
 					} else {
 						return handleAPIError(err)
 					}
+				} else {
+					return handleAPIError(err)
 				}
-			} else {
-				if detErr := errors.Join(
-					r.detachCustomerPoliciesFromPermissionSet(
-						ctx,
-						state,
-					)...,
-				); detErr != nil {
-					return fmt.Errorf("[API ERROR] Failed to detach customer-managed policies from Permission Set: %w", detErr)
-				}
-
 			}
 
+			changed = true
+		}
+
+		// Detach customer-managed policies
+		if detachCustomerManagedPolocies {
+			if detErr := errors.Join(
+				r.detachCustomerPoliciesFromPermissionSet(ctx, state)...,
+			); detErr != nil {
+				return fmt.Errorf("[API ERROR] Failed to detach customer-managed policies from Permission Set: %w", detErr)
+			}
+
+			changed = true
+		}
+
+		// Provision
+		if changed {
 			if ok, errs := r.provisionPermissionSetAllWait(ctx, state, 10*time.Minute); !ok {
 				return fmt.Errorf("[API ERROR] Provisioning did not complete: %w", errors.Join(errs...))
 			}
 		}
+
 		return nil
 	}
 
