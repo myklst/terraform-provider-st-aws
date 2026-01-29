@@ -294,7 +294,7 @@ func (r *iamPolicyV2Resource) Create(ctx context.Context, req resource.CreateReq
 
 	// Create policy are not expected to have not found warning.
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
+	addReadDiagsWithNotFoundError(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -325,7 +325,7 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 	_, assigneeName := assigneeTypeOf(state)
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
+	addReadDiagsWithNotFoundWarning(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr, "The combined policies may be deleted due to human mistake or API error, will trigger update to recreate the combined policy:")
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -341,7 +341,7 @@ func (r *iamPolicyV2Resource) Read(ctx context.Context, req resource.ReadRequest
 	// because there is no ways to get plan configuration in Read() function to
 	// indicate user had removed the non existed policies from the input.
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
+	addReadDiagsWithNotFoundWarning(&resp.Diagnostics, assigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr, "The policy that will be used to combine policies had been removed on AWS, next apply with update will prompt error:")
 
 	// Set state so that Terraform will trigger update if there are changes in state.
 	setStateDiags = resp.State.Set(ctx, &state)
@@ -385,7 +385,7 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 
 	// readAttachedPolicy.
 	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, plan)
-	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
+	addReadDiagsWithNotFoundError(&resp.Diagnostics, assigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -470,7 +470,7 @@ func (r *iamPolicyV2Resource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	readCombinedPolicyNotExistErr, readCombinedPolicyErr := r.readCombinedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
+	addReadDiagsWithNotFoundError(&resp.Diagnostics, assigneeName, readCombinedPolicyNotExistErr, readCombinedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -486,14 +486,6 @@ func (r *iamPolicyV2Resource) Delete(ctx context.Context, req resource.DeleteReq
 	var state *iamPolicyV2ResourceModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// readAttachedPolicy.
-	_, readAssigneeName := assigneeTypeOf(state)
-	readAttachedPolicyNotExistErr, readAttachedPolicyErr := r.readAttachedPolicy(ctx, state)
-	addReadCombinedDiags(&resp.Diagnostics, readAssigneeName, readAttachedPolicyNotExistErr, readAttachedPolicyErr)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -984,7 +976,27 @@ func assigneeTypeOf(assignee *iamPolicyV2ResourceModel) (assigneeType string, as
 	return "", "(unknown-target)"
 }
 
-func addReadCombinedDiags(diags *diag.Diagnostics, assigneeName string, notFoundErrs, unexpectedErrs []error) {
+// addReadDiagsWithNotFoundWarning adds diagnostic messages when reading attached policies fails.
+//   - Policies that are not found on AWS generate a WARNING instead of an ERROR, indicating that
+//     the policy has been removed externally and a future apply may fail.
+//   - Unexpected errors (e.g., API failures) still generate an ERROR.
+func addReadDiagsWithNotFoundWarning(diags *diag.Diagnostics, assigneeName string, notFoundErrs, unexpectedErrs []error, warningDetail string,) {
+	addDiagnostics(
+		diags, "warning",
+		fmt.Sprintf("[API WARNING] Failed to Read Attached Policies for %v: Policy Not Found!", assigneeName),
+		notFoundErrs, warningDetail,
+	)
+	addDiagnostics(
+		diags, "error",
+		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Unexpected Error!", assigneeName),
+		unexpectedErrs, "",
+	)
+}
+
+// addReadDiagsWithNotFoundError adds diagnostic messages when reading attached policies fails.
+// - Policies that are not found on AWS generate an ERROR, preventing the user from applying a non-existent policy.
+// - Unexpected errors (e.g., API failures) also generate an ERROR.
+func addReadDiagsWithNotFoundError(diags *diag.Diagnostics, assigneeName string, notFoundErrs, unexpectedErrs []error) {
 	addDiagnostics(
 		diags, "error",
 		fmt.Sprintf("[API ERROR] Failed to Read Combined Policies for %v: Policy Not Found!", assigneeName),
